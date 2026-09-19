@@ -20,7 +20,8 @@
 
   const CACHE_KEY = "ryze.ice.v2";
   const ENDPOINT  = "/api/ice";
-  const FETCH_MS  = 4000;
+  const FETCH_MS  = 2500;   // don't make the first dial wait long on a slow provider —
+                             // fall back to the built-in STUN/TURN list quickly instead
 
   let fallback = [{ urls: "stun:stun.l.google.com:19302" }];
   let inflight = null;

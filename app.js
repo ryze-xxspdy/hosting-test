@@ -48,15 +48,23 @@ const CONFIG = {
          secure: true, key: "peerjs" }                                 */
   peerServer: null,
 
-  codeLength: 8,              // 32^8 ≈ 1 trillion codes; 6 was guessable in a 5-minute window
-  relayAfterAttempts: 2,      // after this many failed dials, force relay-only (TURN) mode
+  codeLength: 5,               // 32^5 ≈ 33.5 million codes. Short enough to read/type
+                                // fast; the 5-minute expiry + non-discoverable broker
+                                // (allow_discovery:false in peer-server) + one-guest lock
+                                // are what keep that shorter window safe rather than
+                                // sheer code length. Raise this back up if the booth is
+                                // ever used somewhere less trusted than a private event.
+  relayAfterAttempts: 1,       // force relay-only (TURN) after just 1 failed direct dial
+                                // instead of 2 — gets a working picture up faster on
+                                // carrier-grade NAT instead of wasting a second attempt
+                                // on a direct path that was never going to succeed
   bitrateDirectKbps: 1800,    // outgoing video cap on a direct path
   bitrateRelayKbps: 900,      // …and through a relay / weak mobile link
   chatBurst: 8, chatBurstMs: 5000,   // incoming-message flood guard
 
-  connectionTimeout: 20000,   // how long before we tell the user something is wrong
+  connectionTimeout: 15000,   // how long before we tell the user something is wrong
   linkMinutes: 5,             // how long a hosted code / link stays valid
-  videoRetryEvery: 6000,      // watchdog interval while video has not arrived
+  videoRetryEvery: 4000,      // watchdog interval while video has not arrived
   maxVideoRetries: 6          // how many times to re-dial before giving up
 };
 
@@ -878,7 +886,7 @@ $("#dateTog").onclick = e => {
    re-dials when video never arrives, code / link / QR joining,
    and a text chat that rides the same data channel.
    ══════════════════════════════════════════════════════════ */
-const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no 0/O/1/I — easy to read aloud
 function genCode(){
   /* crypto RNG, not Math.random (predictable). 32 symbols divides 256
      evenly, so taking each byte mod 32 introduces no bias. */

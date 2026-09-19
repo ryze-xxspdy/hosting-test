@@ -28,7 +28,6 @@ your-repo/
 |---|---|
 | Cloudflare Realtime TURN (anycast, good for Asia) | `CLOUDFLARE_TURN_KEY_ID`, `CLOUDFLARE_TURN_API_TOKEN` |
 | Metered.ca | `METERED_APP` (the part before `.metered.live`), `METERED_API_KEY` |
-| Twilio | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` |
 
 **2. Set the admin passcode:** `ADMIN_PASS` = something new. The old `ryze2026` was
 readable by anyone via View Source; it's gone from `app.js`. If `ADMIN_PASS` is unset,
@@ -37,7 +36,7 @@ the strip manager stays locked (fails closed).
 **3. Keep `DISCORD_WEBHOOK` as before.** Redeploy after adding env vars.
 
 **4. Check it works.** Open `https://YOUR-SITE/api/ice` in a browser tab.
-`"provider":"cloudflare"` (or metered/twilio) = good. `"provider":"public-fallback"`
+`"provider":"cloudflare"` (or `metered`) = good. `"provider":"public-fallback"`
 means no provider is configured yet — it still runs, but on a free community relay
 that can be slow or vanish.
 
@@ -54,13 +53,26 @@ It can't promise literally 100%: if a network blocks *all* outbound TLS on port 
 (some strict corporate/school firewalls), nothing browser-based gets through. The
 booth detects a fully blocked network up front and says so.
 
+**Tuned for a faster connect:** relay-only mode now kicks in after just 1 failed direct
+dial instead of 2, the video watchdog re-dials every 4 s instead of 6, the "something's
+wrong" message shows after 15 s instead of 20, and the `/api/ice` fetch gives up on a
+slow TURN provider after 2.5 s instead of 4 and falls back to the built-in list — so a
+hard-NAT pair lands on a working relayed picture sooner instead of waiting through a
+direct-path attempt that was never going to work.
+
 Console lines to look for (F12): `[duo] video path: relay` = it used the relay;
 `[duo] network probe:` shows whether the relay was reachable.
 
 ## Security summary
 
 Enforced now:
-- **Codes** are 8 characters from a cryptographic RNG (were 6, from `Math.random`).
+- **Codes** are 5 characters from a cryptographic RNG (were 8; 6 and below were guessable
+  in a 5-minute window with `Math.random`). 5 characters (32⁵ ≈ 33.5 million combinations)
+  trades some of that margin for something people can actually read aloud and type on a
+  phone keyboard in a few seconds — the 5-minute expiry, the non-discoverable broker
+  (`allow_discovery:false`), and the one-guest-per-room lock are what keep that shorter
+  window safe rather than sheer code length. Bump `CONFIG.codeLength` back up in `app.js`
+  if this booth will ever sit somewhere less trusted than a private event.
 - **The 5-minute expiry is real.** Before, the countdown was cosmetic — the room stayed
   open. Now the room closes at 0:00.
 - **One guest per room**, decided at the first knock (the old check let two people in
@@ -99,7 +111,7 @@ in `vercel.json`. Free tiers that sleep add many seconds to the first call.
 
 ## What changed in app.js
 
-`adminPass` removed (server-checked) · `genCode` crypto RNG, 8 chars · host/join wait for
+`adminPass` removed (server-checked) · `genCode` crypto RNG, 5 chars · host/join wait for
 ICE servers, cancellable · relay-only escalation · 4 s drop → auto re-dial · online /
 visibility recovery · wake lock · bitrate caps · expiry enforced · single-guest lock ·
 validated partner messages. New `CONFIG` keys: `codeLength`, `relayAfterAttempts`,
@@ -111,7 +123,7 @@ validated partner messages. New `CONFIG` keys: `codeLength`, `relayAfterAttempts
   open F12 → Console, load the page, open Duo Booth, and look for "Refused to …". If
   something legitimate is blocked, add its host to the matching directive. Emergency
   rollback: rename the `Content-Security-Policy` key to `Content-Security-Policy-Report-Only`.
-- Old 6-character codes/links stop working (expected — they were the weak ones).
+- Old 8-character codes/links stop working (expected — the code length changed).
 - `CHANGES_SUMMARY.md`, `IMPROVEMENTS.md` and `VERCEL_DEPLOY.md` describe an earlier
   build (12-char link tokens, `S.duo.linkToken`, "no TURN needed", default admin
   password). They no longer match the code — delete them.
