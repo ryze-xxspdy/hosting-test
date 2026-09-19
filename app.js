@@ -13,7 +13,19 @@ const CONFIG = {
   discordEndpoint: "/api/discord", // Vercel function; leave as is
   defaultCaption: "",
   maxShots: 8,
-  duoPeerPrefix: "ryzebooth-"    // namespaces our codes on the shared PeerJS broker
+  duoPeerPrefix: "ryzebooth-",   // namespaces our codes on the shared PeerJS broker
+  // Public STUN servers used to help two devices find a direct path to each
+  // other over the open internet (not just on the same Wi-Fi). This is what
+  // lets Duo Booth connect nationwide, any time, anywhere both people have
+  // an internet connection — not only devices on the same local network.
+  // A small number of very restrictive networks (locked-down corporate or
+  // school firewalls) block peer-to-peer video outright; only a paid TURN
+  // relay server can work around that, and isn't configured here — see README.
+  duoIceServers: [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun1.l.google.com:19302" },
+    { urls: "stun:stun.cloudflare.com:3478" }
+  ]
 };
 
 /* ─── built-in strips ─────────────────────────────────────── */
@@ -60,7 +72,7 @@ const S = {
   mirror: true, facing: "user", sound: true,
   shots: [], stickers: [], sel: null, cat: "😀",
   busy: false, gallery: [], custom: {},
-  duo: emptyDuo()
+  duo: emptyDuo(), theme: "dark"
 };
 function emptyDuo(){
   return {
@@ -110,7 +122,7 @@ function go(n){
   $("#count").textContent = n + " of 4";
   if(n === 2) applyDuoStep2UI();
   if(n === 3) applyDuoStep3UI();
-  if(n === 4) drawPreview();
+  if(n === 4){ drawPreview(); toast("Thank you for using RyzeBooth ✨", "good"); }
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 $$("[data-go]").forEach(b => b.onclick = () => go(+b.dataset.go));
@@ -123,7 +135,7 @@ function markCardSelected(mode){
   $("#duoCard").classList.toggle("sel", mode === "duo");
 }
 function layoutFilter(){
-  return S.duo.active ? f => shotsOf(f) % 2 === 0 : null;
+  return null; // any layout works in Duo Booth — each shot already combines both cameras
 }
 function applyDuoStep2UI(){
   const guest = S.duo.active && S.duo.role === "guest";
@@ -132,7 +144,6 @@ function applyDuoStep2UI(){
   $("#step2Waiting").hidden = !guest;
   $("#duoLayoutNote").hidden = !(S.duo.active && S.duo.role === "host");
   if(!guest){
-    if(S.duo.active && shotsOf(F()) % 2 !== 0) S.frame = "duo";
     buildLayouts($("#layouts"), false, layoutFilter());
   }
 }
@@ -155,6 +166,28 @@ $("#soundBtn").onclick = e => {
   S.sound = !S.sound;
   e.currentTarget.classList.toggle("on", S.sound);
   if(S.sound) beep(900, .07);
+};
+
+/* ─── light / dark theme ──────────────────────────────────── */
+const THEME_KEY = "smora_theme_v1";
+function applyTheme(t){
+  S.theme = t;
+  document.documentElement.setAttribute("data-theme", t);
+  $("#themeBtn").textContent = t === "light" ? "☀" : "☾";
+  $("#themeBtn").classList.toggle("on", t === "light");
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if(meta) meta.setAttribute("content", t === "light" ? "#FDF7F4" : "#141013");
+}
+function loadTheme(){
+  let t = null;
+  try{ t = localStorage.getItem(THEME_KEY); }catch(e){}
+  if(!t) t = (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";
+  applyTheme(t);
+}
+$("#themeBtn").onclick = () => {
+  applyTheme(S.theme === "light" ? "dark" : "light");
+  try{ localStorage.setItem(THEME_KEY, S.theme); }catch(e){}
+  if(S.step === 4) drawPreview();
 };
 
 /* ─── builders ────────────────────────────────────────────── */
@@ -235,7 +268,7 @@ function prepShots(){
   if(S.shots.length !== n) S.shots = new Array(n).fill(null);
   renderShots();
   $("#shotLine").textContent = S.duo.active
-    ? `${n} shot${n > 1 ? "s" : ""} — alternating between you and your partner.`
+    ? `${n} shot${n > 1 ? "s" : ""} — each one a single photo with you both in it.`
     : `${n} shot${n > 1 ? "s" : ""}, one after another. Tap any photo to retake it.`;
 }
 async function startCam(){
@@ -310,12 +343,11 @@ async function runSequence(remote = false){
   S.shots = new Array(n).fill(null); renderShots();
 
   if(S.duo.active){
-    const rounds = n / 2;
-    for(let i = 0; i < rounds; i++){
+    for(let i = 0; i < n; i++){
       await countdown(S.timer);
       flash(); shutter();
-      const [a, b] = duoPair(grab(), grabFrom($("#camRemote"), false));
-      S.shots[i * 2] = a; S.shots[i * 2 + 1] = b;
+      const [left, right] = duoPair(grab(), grabFrom($("#camRemote"), false));
+      S.shots[i] = combineDuo(left, right);
       renderShots();
       await wait(520);
     }
@@ -373,6 +405,28 @@ function grabFrom(v, mirror){
   if(mirror){ x.translate(c.width, 0); x.scale(-1, 1); }
   x.drawImage(v, 0, 0, c.width, c.height);
   return c;
+}
+
+// Merges two camera captures into a single side-by-side photo — the host
+// always on the left half, the guest always on the right half — so one
+// Duo Booth shot produces exactly one combined picture, not two.
+function combineDuo(left, right){
+  const c = document.createElement("canvas");
+  c.width = left.width; c.height = left.height;
+  const x = c.getContext("2d");
+  const halfW = c.width / 2;
+  drawCover(x, left, 0, 0, halfW, c.height);
+  drawCover(x, right, halfW, 0, halfW, c.height);
+  x.fillStyle = "rgba(255,255,255,.85)";
+  x.fillRect(halfW - 1.5, 0, 3, c.height);
+  return c;
+}
+function drawCover(ctx, src, dx, dy, dw, dh){
+  const sr = src.width / src.height, dr = dw / dh;
+  let sw, sh, sx, sy;
+  if(sr > dr){ sh = src.height; sw = sh * dr; sx = (src.width - sw) / 2; sy = 0; }
+  else       { sw = src.width;  sh = sw / dr; sx = 0; sy = (src.height - sh) / 2; }
+  ctx.drawImage(src, sx, sy, sw, sh, dx, dy, dw, dh);
 }
 
 function renderShots(){
@@ -448,22 +502,27 @@ function drawStrip(canvas, { withStickers = false, frame = null, shots = null } 
     const cap = (S.caption || "").trim();
     const baseY = h - f.foot / 2 + f.pad / 3;
     x.textAlign = "center"; x.fillStyle = ink;
+    let lastY = baseY;
     if(cap){
       x.font = `700 ${Math.round(f.foot * .34)}px 'Plus Jakarta Sans', sans-serif`;
       x.fillText(cap, w / 2, baseY, w - f.pad * 2);
     }
     if(S.date){
       const d = new Date(), p = n => String(n).padStart(2, "0");
+      const dateY = cap ? baseY + f.foot * .3 : baseY;
       x.globalAlpha = .55;
       x.font = `500 ${Math.round(f.foot * .2)}px Inter, sans-serif`;
-      x.fillText(`${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()}`, w / 2, cap ? baseY + f.foot * .3 : baseY);
+      x.fillText(`${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()}`, w / 2, dateY);
       x.globalAlpha = 1;
+      lastY = dateY;
     }
-    // brand watermark
-    x.textAlign = "right";
-    x.globalAlpha = .45;
-    x.font = `700 ${Math.round(f.foot * .15)}px 'Plus Jakarta Sans', sans-serif`;
-    x.fillText(CONFIG.name, w - f.pad, h - f.pad * .45);
+    // brand watermark — sits centered just below the date, a touch bigger
+    // than before so it reads clearly instead of hiding in the corner
+    x.textAlign = "center";
+    x.globalAlpha = .6;
+    x.font = `800 ${Math.round(f.foot * .19)}px 'Plus Jakarta Sans', sans-serif`;
+    const brandY = Math.min(lastY + f.foot * .28, h - f.pad * .35);
+    x.fillText(CONFIG.name, w / 2, brandY, w - f.pad * 2);
     x.globalAlpha = 1;
   }
 
@@ -616,7 +675,6 @@ $("#duoCopyBtn").onclick = async () => {
 $("#duoContinueBtn").onclick = () => {
   closeDuoModal();
   markCardSelected("duo");
-  if(shotsOf(F()) % 2 !== 0) S.frame = "duo";
   S.shots = []; S.stickers = []; S.sel = null;
   buildLayouts($("#layouts"), false, layoutFilter());
   go(2);
@@ -629,7 +687,7 @@ function duoHost(){
   S.duo.role = "host";
   const code = genCode();
   S.duo.code = code;
-  const peer = new Peer(CONFIG.duoPeerPrefix + code.toLowerCase());
+  const peer = new Peer(CONFIG.duoPeerPrefix + code.toLowerCase(), { config: { iceServers: CONFIG.duoIceServers } });
   S.duo.peer = peer;
   peer.on("open", () => {
     $("#duoCodeOut").textContent = code;
@@ -652,7 +710,7 @@ function duoJoin(codeRaw){
   $("#duoJoinStatus").textContent = "Connecting…";
   S.duo.role = "guest";
   S.duo.hostId = CONFIG.duoPeerPrefix + code.toLowerCase();
-  const peer = new Peer();
+  const peer = new Peer({ config: { iceServers: CONFIG.duoIceServers } });
   S.duo.peer = peer;
   peer.on("open", () => {
     const conn = peer.connect(S.duo.hostId, { reliable: true });
@@ -735,6 +793,31 @@ async function postToDiscord(blob){
   }catch(e){ return false; }
 }
 
+// On desktop browsers an <a download> link reliably saves the file, so we
+// can claim success right away. On many phones — iOS Safari in particular —
+// that same link just opens the image in a new tab instead of downloading
+// it, so the old code was saying "Saved to your device" when nothing had
+// actually been saved yet. Where the native share sheet is available we use
+// it instead: the person explicitly taps "Save Image", so success is real.
+async function saveToDevice(blob){
+  const file = new File([blob], `${CONFIG.name}-strip.png`, { type: "image/png" });
+  if(navigator.canShare && navigator.canShare({ files: [file] })){
+    try{
+      await navigator.share({ files: [file], title: CONFIG.name });
+      return true;
+    }catch(err){
+      if(err && err.name === "AbortError") return false; // they backed out of the share sheet
+      // sharing itself failed (not supported for this file, etc.) — fall through
+    }
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = `${CONFIG.name}-strip.png`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+  return true;
+}
+
 $("#saveBtn").onclick = async () => {
   const btn = $("#saveBtn");
   btn.disabled = true; btn.textContent = "Saving…";
@@ -742,17 +825,18 @@ $("#saveBtn").onclick = async () => {
   const blob = await new Promise(r => c.toBlob(r, "image/png"));
 
   // 1 — save to the device
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url; a.download = `${CONFIG.name}-strip.png`;
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 4000);
-  pushGallery(c);
-  beep(880, .1); setTimeout(() => beep(1180, .13), 110);
+  const saved = await saveToDevice(blob);
+  if(saved){
+    pushGallery(c);
+    beep(880, .1); setTimeout(() => beep(1180, .13), 110);
+  }
 
-  // 2 — send the same strip to Discord
-  const ok = await postToDiscord(blob);
-  toast(ok ? "Saved to your device and to Discord" : "Saved to your device", "good");
+  // 2 — send the same strip to Discord (only worth doing if we actually have a saved copy)
+  const ok = saved ? await postToDiscord(blob) : false;
+  toast(
+    saved ? (ok ? "Saved to your device and to Discord" : "Saved to your device") : "Not saved — tap Save again",
+    saved ? "good" : "bad"
+  );
   btn.disabled = false; btn.textContent = "Save to my device";
 };
 
@@ -903,6 +987,7 @@ $("#fImport").addEventListener("change", e => {
 /* ─── boot ────────────────────────────────────────────────── */
 (async function init(){
   $("#brandName").textContent = CONFIG.name;
+  loadTheme();
   loadCustom();
 
   // strips.json shipped with the site loads for everyone

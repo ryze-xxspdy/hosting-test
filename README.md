@@ -22,22 +22,44 @@ enters that code. Once connected, both cameras stream directly to each other
 (peer-to-peer WebRTC) — video never passes through our server.
 
 - Only the host picks the strip layout, look and countdown; the guest's
-  screen mirrors those choices automatically.
-- Duo layouts must have an even number of photos (the built-in **Duo**
-  layout is 1 you + 1 partner); the layout picker filters to those
-  automatically while in Duo Booth.
+  screen mirrors those choices automatically. Any layout works — there's no
+  even/odd restriction any more.
 - Only the host's **Take the photos** button starts the countdown; it fires
-  for both people at once. Each shot alternates between the host's camera
-  and the guest's camera.
+  for both people at once. Each shot merges both cameras into **one**
+  side-by-side photo (host on the left, guest on the right) — one countdown
+  gives one combined picture, not two separate ones.
 - Matchmaking (turning a 6-character code into a live connection) runs on
   PeerJS's free public broker (`peerjs.com`), so no signaling server of ours
-  is required. That broker is fine for casual/demo use, but it's a shared
+  is required. That works over the open internet, not just a shared Wi-Fi —
+  the two people can be anywhere, any time, as long as both have an internet
+  connection. That broker is fine for casual/demo use, but it's a shared
   third-party service with no uptime guarantee — for production traffic,
   run your own [PeerServer](https://github.com/peers/peerjs-server) and
   point `CONFIG.duoPeerPrefix`/the `new Peer(...)` calls in `app.js` at it.
-- Very restrictive corporate/school networks can block the peer-to-peer
-  video itself (no TURN relay is configured here); if a connection data
-  channel succeeds but video never appears, that's usually why.
+- `CONFIG.duoIceServers` in `app.js` lists the public STUN servers used to
+  help two devices find a direct path to each other, which is most of what
+  makes nationwide connections work. A small number of very restrictive
+  networks (locked-down corporate/school firewalls, some mobile carriers)
+  block peer-to-peer video outright and need a **TURN** relay to work around
+  — that requires a paid or self-hosted TURN server and isn't configured
+  here. If a connection's data channel succeeds but video never appears,
+  that's usually why.
+
+## Light / dark theme
+
+The ☾/☀ button in the top bar switches between dark and light. It follows
+the visitor's system preference the first time, then remembers whatever they
+picked (stored in that browser's `localStorage`).
+
+## GitHub link
+
+The header also has a GitHub icon (`#githubLink` in `index.html`). It ships
+pointing at a placeholder — open `index.html` and change its `href` to your
+own repo URL before deploying:
+
+```html
+<a class="iconbtn" id="githubLink" href="https://github.com/your-username/your-repo" ...>
+```
 
 ## Design your own strip
 
@@ -72,8 +94,17 @@ device and nothing goes to Discord.
 ## How saving works
 
 There is no separate "send to Discord" button any more. Pressing **Save to my
-device** does both things: the PNG downloads, and the exact same PNG is posted
-to your Discord channel.
+device** does both things: the strip is saved, and the exact same PNG is
+posted to your Discord channel.
+
+On phones with a native share sheet (most iOS and Android browsers), **Save**
+opens that sheet so the person explicitly taps "Save Image" — this fixed a
+bug where, on iOS Safari especially, the old download-link trick just opened
+the image in a new tab instead of saving it, while the app still claimed
+"Saved to your device." Now the toast only says "Saved" once a save actually
+happened, and says "Not saved — tap Save again" if the person backs out of
+the share sheet or nothing was saved. Desktop browsers keep using the plain
+download link, which works reliably there.
 
 ## Adding strip layouts
 
