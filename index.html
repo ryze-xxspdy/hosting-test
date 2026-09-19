@@ -354,6 +354,65 @@ option{background:#231C22;color:#fff}
 .row{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(min(100%,130px),1fr))}
 .hint{font-size:12.5px;color:var(--dim);line-height:1.6;margin-top:7px}
 hr{border:0;border-top:1px solid var(--line);margin:22px 0}
+
+/* ── paper tools ─────────────────────────── */
+.swwrap{position:relative;display:inline-flex}
+.swdel{
+  position:absolute;top:-5px;right:-5px;width:16px;height:16px;border-radius:50%;
+  background:var(--card);border:1px solid var(--line-2);color:var(--bad);
+  font-size:9px;font-style:normal;display:none;place-items:center;cursor:pointer;
+}
+.swwrap:hover .swdel{display:grid}
+.papertools{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:14px}
+.papertools input[type=color]{
+  width:40px;height:34px;padding:2px;border-radius:9px;border:1px solid var(--line);
+  background:transparent;cursor:pointer;
+}
+.papertools input[type=number]{width:74px;padding:8px 10px}
+#paperPrev{width:40px;height:34px;border-radius:9px;border:1px solid var(--line-2)}
+
+/* ── duo modal ───────────────────────────── */
+.duoPrev{position:relative;border-radius:var(--r-md);overflow:hidden;background:#0C090B;border:1px solid var(--line);aspect-ratio:4/3;max-height:220px;margin-top:16px}
+.duoPrev video{width:100%;height:100%;object-fit:cover}
+.duoPrev video.mir{transform:scaleX(-1)}
+.duoPrev .msg{position:absolute;inset:0;display:grid;place-items:center;text-align:center;padding:18px;color:var(--muted);font-size:13px;line-height:1.5}
+.duoPair{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px}
+.duoPair .duoPrev{margin-top:0;max-height:150px}
+.linkrow{display:flex;gap:8px;margin-top:10px}
+.linkrow input{flex:1;min-width:0;font-family:ui-monospace,monospace;font-size:12px}
+.linkrow .btn{padding:12px 16px;min-height:44px;flex:none}
+.qrbox{display:grid;place-items:center;padding:14px;background:#fff;border-radius:var(--r-md);margin-top:14px;width:fit-content;margin-inline:auto}
+.qrbox img,.qrbox canvas{display:block}
+.netpill{
+  display:inline-block;padding:7px 14px;border-radius:99px;font-size:12px;font-weight:600;
+  border:1px solid var(--line-2);color:var(--muted);margin-top:4px;
+}
+.netpill.good{border-color:rgba(123,217,168,.5);color:var(--good)}
+.netpill.bad{border-color:rgba(255,122,133,.5);color:var(--bad)}
+.hint.net.good{color:var(--good)}
+.hint.net.bad{color:var(--bad)}
+
+/* ── chat ────────────────────────────────── */
+.chathead{display:flex;align-items:center;gap:8px}
+.badge{min-width:18px;height:18px;padding:0 5px;border-radius:99px;background:var(--pink);color:#2B1520;font-size:11px;font-weight:700;display:grid;place-items:center}
+.chatlog{
+  margin-top:10px;max-height:190px;overflow-y:auto;display:flex;flex-direction:column;gap:7px;
+  padding:12px;border-radius:var(--r-md);background:color-mix(in srgb, var(--text) 4%, transparent);
+  border:1px solid var(--line);
+}
+.chatlog .msg{display:flex}
+.chatlog .msg.me{justify-content:flex-end}
+.chatlog .msg span{
+  max-width:82%;padding:8px 12px;border-radius:14px;font-size:13.5px;line-height:1.45;
+  background:color-mix(in srgb, var(--text) 9%, transparent);word-break:break-word;
+}
+.chatlog .msg.me span{background:var(--pink);color:#2B1520}
+.chatrow{display:flex;gap:8px;margin-top:10px}
+.chatrow input{flex:1;min-width:0}
+.chatrow .btn{padding:12px 18px;min-height:44px;flex:none}
+.quickbar{margin-top:10px}
+.quickbar .chip{padding:7px 12px;font-size:12.5px}
+
 </style>
 </head>
 <body>
@@ -397,7 +456,7 @@ hr{border:0;border-top:1px solid var(--line);margin:22px 0}
       <div class="glyph"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="9" cy="8" r="3.4"/><path d="M2 20v-.6a6.6 6.6 0 0 1 12.2-3.4"/><circle cx="17" cy="10" r="2.8"/><path d="M22 20a5 5 0 0 0-7.4-4.4"/></svg></div>
       <span class="tag">With someone</span>
       <h3>Duo Booth</h3>
-      <p>Connect two cameras live with a one-time code and appear in the same strip.</p>
+      <p>Connect two cameras live with a code, a link, or a QR — then chat while you shoot.</p>
       <div class="foot"><span>Host or join</span>
         <span class="go"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span>
       </div>
@@ -468,13 +527,34 @@ hr{border:0;border-top:1px solid var(--line);margin:22px 0}
       </div>
       <div class="shots" id="shots"></div>
     </div>
-    <div class="panel">
-      <span class="label">Look</span>
-      <div class="chips" id="looks3"></div>
-      <div class="field">
-        <button class="btn primary wide" id="shoot">Start camera</button>
+    <div>
+      <div class="panel">
+        <span class="label">Look</span>
+        <div class="chips" id="looks3"></div>
+        <div class="field">
+          <button class="btn primary wide" id="shoot">Start camera</button>
+        </div>
+        <p class="hint" id="camHint">Your camera never leaves this device. Photos are only saved when you choose to save them.</p>
+        <div id="duoNetWrap" hidden style="margin-top:12px">
+          <span class="netpill" id="netPill" hidden></span>
+          <button class="btn ghost wide retryVideo" style="margin-top:10px">Retry video</button>
+        </div>
       </div>
-      <p class="hint" id="camHint">Your camera never leaves this device. Photos are only saved when you choose to save them.</p>
+
+      <div class="panel" id="chatPanel" hidden style="margin-top:16px">
+        <div class="chathead"><span class="label">Chat</span><span class="badge" id="chatBadge" hidden></span></div>
+        <div class="chatlog" id="chatLog"></div>
+        <div class="chips quickbar">
+          <button class="chip" data-quick="Ready? 📸">Ready?</button>
+          <button class="chip" data-quick="Wait a sec ✋">Wait</button>
+          <button class="chip" data-quick="You look great 😍">😍</button>
+          <button class="chip" data-quick="Haha 😂">😂</button>
+        </div>
+        <div class="chatrow">
+          <input type="text" id="chatIn" maxlength="400" placeholder="Say something…" autocomplete="off">
+          <button class="btn primary" id="chatSend">Send</button>
+        </div>
+      </div>
     </div>
   </div>
   <div class="nav"><button class="btn ghost" data-go="2">Back</button><div class="spacer"></div><button class="btn primary" id="toStep4" disabled>Decorate strip</button></div>
@@ -495,6 +575,17 @@ hr{border:0;border-top:1px solid var(--line);margin:22px 0}
       <div class="panel">
         <span class="label">Paper</span>
         <div class="swatches" id="swatches"></div>
+        <div class="papertools">
+          <input type="color" id="paperA" value="#FFE1EC" aria-label="First paper colour">
+          <input type="color" id="paperB" value="#FFF4E4" aria-label="Second paper colour">
+          <input type="number" id="paperAngle" value="160" min="0" max="360" step="5" aria-label="Blend angle">
+          <span id="paperPrev" aria-hidden="true"></span>
+        </div>
+        <div class="chips">
+          <button class="chip" id="paperAddSolid">Add colour</button>
+          <button class="chip" id="paperAddBlend">Add blend</button>
+        </div>
+        <p class="hint">Mix any colour you like, or blend two of them at an angle. Papers you add stay on this device.</p>
         <div class="field">
           <span class="label">Caption</span>
           <input type="text" id="caption" maxlength="34" placeholder="say something…">
@@ -579,66 +670,96 @@ hr{border:0;border-top:1px solid var(--line);margin:22px 0}
 
 <!-- ══════════ DUO CONNECT ══════════ -->
 <div class="modal" id="duoModal">
-  <div class="sheet" style="max-width:520px">
+  <div class="sheet" style="max-width:540px">
     <div style="display:flex;align-items:start;gap:14px">
       <div style="flex:1"><h2>Duo Booth</h2><p class="sub" id="duoSub">Connect your camera with someone else's, live.</p></div>
       <button class="iconbtn" id="duoClose" aria-label="Close">✕</button>
     </div>
 
-    <!-- Camera preview in modal -->
-    <video id="duoModalCam" style="width:100%;border-radius:var(--r-md);margin-top:16px;display:none;max-height:240px;object-fit:cover;background:var(--card)" playsinline muted autoplay></video>
-
-    <!-- Choice: Code or Link -->
-    <div id="duoChoice" style="margin-top:18px">
-      <p style="font-size:13px;color:var(--muted);margin-bottom:12px">Select connection method:</p>
-      <button class="btn primary wide" id="duoHostBtn">Code: Host a session</button>
-      <p class="hint">Generate a 6-character code to share with your partner.</p>
-      <button class="btn ghost wide" id="duoJoinBtn" style="margin-top:14px">Code: Join a session</button>
-      <p class="hint">Enter the code someone shared with you.</p>
-      
-      <div style="margin-top:18px;padding-top:18px;border-top:1px solid var(--line)">
-        <button class="btn primary wide" id="duoLinkHostBtn">Link: Generate a 5-minute link</button>
-        <p class="hint">Create a shareable link that expires in 5 minutes.</p>
-        <button class="btn ghost wide" id="duoLinkJoinBtn" style="margin-top:14px">Link: Join with a link</button>
-        <p class="hint">Paste the link or token someone shared.</p>
-      </div>
+    <!-- your own camera, open from the moment the sheet does -->
+    <div class="duoPrev" id="duoPreviewWrap">
+      <video id="duoModalCam" playsinline muted autoplay></video>
+      <div class="msg" id="duoCamMsg" hidden>Starting your camera…</div>
+      <span class="camLabel">You</span>
     </div>
 
-    <!-- Code-based: Host -->
-    <div id="duoHostView" hidden style="margin-top:8px">
+    <!-- choose -->
+    <div id="duoChoice" style="margin-top:18px">
+      <button class="btn primary wide" id="duoHostBtn">Start a session</button>
+      <p class="hint">You get a code, a link and a QR code — share whichever is easiest.</p>
+      <button class="btn ghost wide" id="duoJoinBtn" style="margin-top:14px">Join a session</button>
+      <p class="hint">Paste the code or the link your partner sent you.</p>
+    </div>
+
+    <!-- host -->
+    <div id="duoHostView" hidden style="margin-top:18px">
       <span class="label">Your code</span>
       <div class="duoCode" id="duoCodeOut">••••••</div>
-      <button class="btn ghost wide" id="duoCopyBtn" style="margin-top:12px">Copy code</button>
-      <p class="hint" id="duoHostStatus">Generating your code…</p>
+      <button class="btn ghost wide" id="duoCopyBtn" style="margin-top:10px">Copy code</button>
+
+      <div style="margin-top:18px;padding-top:18px;border-top:1px solid var(--line)">
+        <span class="label">Or send the link</span>
+        <div class="linkrow">
+          <input type="text" id="duoLinkOut" readonly aria-label="Invite link">
+          <button class="btn ghost" id="duoLinkCopyBtn">Copy</button>
+        </div>
+        <button class="btn primary wide" id="duoShareBtn" style="margin-top:10px">Share link</button>
+      </div>
+
+      <div id="duoQrWrap" hidden style="margin-top:18px">
+        <span class="label">Or scan this</span>
+        <div class="qrbox" id="duoQr"></div>
+        <p class="hint" style="text-align:center">Point their camera at this and the booth opens already joined.</p>
+      </div>
+
+      <p class="hint" id="duoExpiry"></p>
+      <p class="hint" id="duoHostStatus">Opening the room…</p>
+      <button class="btn ghost wide" id="duoNewCodeBtn" style="margin-top:10px">New code</button>
     </div>
 
-    <!-- Code-based: Join -->
-    <div id="duoJoinView" hidden style="margin-top:8px">
-      <div class="field"><span class="label">Partner's code</span><input type="text" id="duoCodeIn" placeholder="e.g. PZK4QD" maxlength="10" autocapitalize="characters" autocomplete="off"></div>
+    <!-- join -->
+    <div id="duoJoinView" hidden style="margin-top:18px">
+      <div class="field">
+        <span class="label">Code or link</span>
+        <input type="text" id="duoCodeIn" placeholder="PZK4QD — or paste the whole link" autocomplete="off" autocapitalize="characters">
+      </div>
       <button class="btn primary wide" id="duoConnectBtn" style="margin-top:14px">Connect</button>
       <p class="hint" id="duoJoinStatus"></p>
     </div>
 
-    <!-- Link-based: Host -->
-    <div id="duoLinkHostView" hidden style="margin-top:8px">
-      <span class="label">Your link</span>
-      <div style="background:var(--card-2);padding:12px;border-radius:var(--r-md);font-family:monospace;font-size:12px;word-break:break-all;margin-top:8px">Share this link or token with your partner 👇</div>
-      <button class="btn ghost wide" id="duoLinkCopyBtn" style="margin-top:12px">Copy link</button>
-      <p class="hint" id="duoLinkExpiry"></p>
-      <p class="hint" id="duoLinkHostStatus">Generating link…</p>
-    </div>
+    <!-- connected: both cameras open right here -->
+    <div id="duoConnectedView" hidden style="margin-top:14px">
+      <div class="duoPair">
+        <div class="duoPrev">
+          <video id="duoSelfCam" playsinline muted autoplay></video>
+          <span class="camLabel">You</span>
+        </div>
+        <div class="duoPrev">
+          <video id="duoRemoteCam" playsinline autoplay></video>
+          <div class="msg" id="duoRemoteMsg">Waiting for their camera…</div>
+          <span class="camLabel">Partner</span>
+        </div>
+      </div>
 
-    <!-- Link-based: Join -->
-    <div id="duoLinkJoinView" hidden style="margin-top:8px">
-      <div class="field"><span class="label">Paste link or token</span><input type="text" id="duoLinkInput" placeholder="Paste the shared link" autocomplete="off"></div>
-      <button class="btn primary wide" id="duoLinkConnectBtn" style="margin-top:14px">Connect</button>
-      <p class="hint" id="duoLinkJoinStatus"></p>
-    </div>
+      <p class="hint net" id="duoNet" hidden></p>
+      <button class="btn ghost wide retryVideo" style="margin-top:10px">Retry video</button>
 
-    <!-- Connected -->
-    <div id="duoConnectedView" hidden style="margin-top:8px">
-      <p class="hint" style="color:var(--good);font-size:14.5px">✓ Connected — you're both in the room.</p>
-      <button class="btn primary wide" id="duoContinueBtn" style="margin-top:10px">Continue</button>
+      <div style="margin-top:16px">
+        <span class="label">Chat</span>
+        <div class="chatlog" id="duoChatLog"></div>
+        <div class="chips quickbar">
+          <button class="chip" data-quick="Ready? 📸">Ready?</button>
+          <button class="chip" data-quick="Wait a sec ✋">Wait</button>
+          <button class="chip" data-quick="You look great 😍">😍</button>
+          <button class="chip" data-quick="Haha 😂">😂</button>
+        </div>
+        <div class="chatrow">
+          <input type="text" id="duoChatIn" maxlength="400" placeholder="Say something…" autocomplete="off">
+          <button class="btn primary" id="duoChatSend">Send</button>
+        </div>
+      </div>
+
+      <button class="btn primary wide" id="duoContinueBtn" style="margin-top:16px">Continue to the booth</button>
     </div>
 
     <button class="btn ghost wide" id="duoBackBtn" style="margin-top:14px" hidden>Back</button>
@@ -647,6 +768,7 @@ hr{border:0;border-top:1px solid var(--line);margin:22px 0}
 </div>
 
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

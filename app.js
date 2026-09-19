@@ -9,24 +9,43 @@
 
 const CONFIG = {
   name: "RyzeBooth",
-  adminPass: "ryze2026",        // change this
-  discordEndpoint: "/api/discord", // Vercel function; leave as is
+  adminPass: "ryze2026",            // change this
+  discordEndpoint: "/api/discord",  // Vercel function; leave as is
   defaultCaption: "",
   maxShots: 8,
-  duoPeerPrefix: "ryzebooth-",   // namespaces our codes on the shared PeerJS broker
-  // Additional STUN servers + basic TURN support for restrictive networks
+  duoPeerPrefix: "ryzebooth-",      // namespaces our codes on the shared PeerJS broker
+
+  /* ── WebRTC servers ───────────────────────────────────────
+     STUN only works when at least one side sits behind a simple
+     NAT. Most mobile carriers — and a lot of home ISPs — use
+     carrier-grade or symmetric NAT, which STUN cannot punch
+     through. That is the real reason the far-away partner used
+     to get a black screen: the data channel connected, the video
+     never found a path. A TURN server relays the video when no
+     direct path exists.
+
+     The openrelay entries below are a FREE public TURN service.
+     They prove the fix works, but they are rate limited and come
+     with no uptime promise. For anything you care about, put
+     your own credentials here — Metered, Twilio, Cloudflare
+     Calls, or a self-hosted coturn.
+     ───────────────────────────────────────────────────────── */
   duoIceServers: [
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
     { urls: "stun:stun.cloudflare.com:3478" },
-    { urls: "stun:stun2.l.google.com:19302" },
-    { urls: "stun:stun3.l.google.com:19302" },
-    { urls: "stun:stun4.l.google.com:19302" }
-    // For production, add TURN servers:
-    // { urls: "turn:your-turn-server.com:3478", username: "user", credential: "pass" }
+    { urls: "turn:openrelay.metered.ca:80",
+      username: "openrelayproject", credential: "openrelayproject" },
+    { urls: "turn:openrelay.metered.ca:443",
+      username: "openrelayproject", credential: "openrelayproject" },
+    { urls: "turn:openrelay.metered.ca:443?transport=tcp",
+      username: "openrelayproject", credential: "openrelayproject" }
   ],
-  // Connection timeout in milliseconds for long-distance connections
-  connectionTimeout: 15000
+
+  connectionTimeout: 20000,   // how long before we tell the user something is wrong
+  linkMinutes: 5,             // how long a hosted code / link stays valid
+  videoRetryEvery: 6000,      // watchdog interval while video has not arrived
+  maxVideoRetries: 6          // how many times to re-dial before giving up
 };
 
 /* ─── built-in strips ─────────────────────────────────────── */
@@ -41,19 +60,86 @@ const BUILTIN = {
 };
 
 const LOOKS = {
-  none:  {label:"None",  css:"none"},
-  warm:  {label:"Warm",  css:"saturate(1.25) sepia(.18) brightness(1.06) contrast(1.02)"},
-  film:  {label:"Film",  css:"sepia(.35) contrast(1.12) brightness(.97) saturate(1.15)"},
-  mono:  {label:"Mono",  css:"grayscale(1) contrast(1.25) brightness(1.05)"},
-  candy: {label:"Candy", css:"saturate(1.5) brightness(1.1) contrast(.92) hue-rotate(-8deg)"},
-  cool:  {label:"Cool",  css:"hue-rotate(178deg) saturate(1.15) brightness(1.04)"},
-  neon:  {label:"Neon",  css:"saturate(2.1) contrast(1.22) hue-rotate(160deg)"},
-  dream: {label:"Dream", css:"brightness(1.12) contrast(.88) saturate(1.3)"},
-  noir:  {label:"Noir",  css:"grayscale(1) contrast(1.6) brightness(.9)"},
-  faded: {label:"Faded", css:"saturate(.72) brightness(1.1) contrast(.9) sepia(.12)"}
+  none:   {label:"None",    css:"none"},
+  warm:   {label:"Warm",    css:"saturate(1.25) sepia(.18) brightness(1.06) contrast(1.02)"},
+  film:   {label:"Film",    css:"sepia(.35) contrast(1.12) brightness(.97) saturate(1.15)"},
+  mono:   {label:"Mono",    css:"grayscale(1) contrast(1.25) brightness(1.05)"},
+  candy:  {label:"Candy",   css:"saturate(1.5) brightness(1.1) contrast(.92) hue-rotate(-8deg)"},
+  cool:   {label:"Cool",    css:"hue-rotate(178deg) saturate(1.15) brightness(1.04)"},
+  neon:   {label:"Neon",    css:"saturate(2.1) contrast(1.22) hue-rotate(160deg)"},
+  dream:  {label:"Dream",   css:"brightness(1.12) contrast(.88) saturate(1.3)"},
+  noir:   {label:"Noir",    css:"grayscale(1) contrast(1.6) brightness(.9)"},
+  faded:  {label:"Faded",   css:"saturate(.72) brightness(1.1) contrast(.9) sepia(.12)"},
+  rose:   {label:"Rose",    css:"saturate(1.32) hue-rotate(-12deg) brightness(1.06) contrast(1.02)"},
+  sunset: {label:"Sunset",  css:"sepia(.26) saturate(1.5) hue-rotate(-18deg) brightness(1.05)"},
+  honey:  {label:"Honey",   css:"sepia(.4) saturate(1.4) brightness(1.08) contrast(1.02)"},
+  ember:  {label:"Ember",   css:"sepia(.3) saturate(1.65) hue-rotate(-26deg) contrast(1.1)"},
+  vhs:    {label:"VHS",     css:"saturate(1.35) contrast(1.16) hue-rotate(8deg) brightness(1.02)"},
+  cyber:  {label:"Cyber",   css:"saturate(1.8) contrast(1.3) hue-rotate(200deg) brightness(.98)"},
+  mint:   {label:"Mint",    css:"hue-rotate(112deg) saturate(1.2) brightness(1.06)"},
+  lilac:  {label:"Lilac",   css:"hue-rotate(250deg) saturate(1.25) brightness(1.08) contrast(.95)"},
+  frost:  {label:"Frost",   css:"brightness(1.12) contrast(.95) saturate(.9) hue-rotate(186deg)"},
+  glow:   {label:"Glow",    css:"brightness(1.2) contrast(.85) saturate(1.15)"},
+  bubble: {label:"Bubble",  css:"saturate(1.7) brightness(1.14) contrast(.9) hue-rotate(-20deg)"},
+  deep:   {label:"Deep",    css:"contrast(1.35) saturate(1.25) brightness(.92)"},
+  silver: {label:"Silver",  css:"grayscale(.85) contrast(1.15) brightness(1.08) sepia(.1)"},
+  sketch: {label:"Sketch",  css:"grayscale(1) contrast(1.9) brightness(1.15)"}
 };
 
-const COLORS = ["#FFFFFF","#FFF4E4","#F2A0BC","#141013","#231A2B","#7BD9A8","#FFC24B","#C9A7E8","#7FB3FF","#E23E57"];
+/* ─── paper ───────────────────────────────────────────────────
+   A paper is either a hex colour ("#FFF4E4") or a blend written
+   as "grad:#AAA,#BBB,160" — two colours and a CSS angle. Both the
+   swatches and the canvas read the same string, so anything the
+   user mixes shows up identically in the export.
+   ───────────────────────────────────────────────────────────── */
+const PAPERS = [
+  "#FFFFFF","#FFF4E4","#FDEBD8","#FFE1EC","#F2A0BC","#E23E57",
+  "#FFC24B","#FFF6A8","#C7F0D8","#7BD9A8","#BFE4FF","#7FB3FF",
+  "#C9A7E8","#9B7BD4","#EDE7E1","#BBB1AA","#4A3F4A","#231A2B",
+  "#141013","#0B0B0C",
+  "grad:#FFE1EC,#FFF4E4,160",
+  "grad:#F2A0BC,#C9A7E8,150",
+  "grad:#7FB3FF,#C7F0D8,160",
+  "grad:#FFC24B,#FF8FA3,155",
+  "grad:#FFF6A8,#FFD3E0,160",
+  "grad:#7BD9A8,#BFE4FF,150",
+  "grad:#231A2B,#4A3F4A,165",
+  "grad:#141013,#3A2436,160"
+];
+
+function paperStops(p){
+  const s = String(p || "#FFFFFF");
+  if(s.startsWith("grad:")){
+    const [a, b, ang] = s.slice(5).split(",");
+    return { a: a || "#FFFFFF", b: b || a || "#FFFFFF", ang: Number(ang) || 160, grad: true };
+  }
+  return { a: s, b: s, ang: 0, grad: false };
+}
+function paperCss(p){
+  const s = paperStops(p);
+  return s.grad ? `linear-gradient(${s.ang}deg, ${s.a}, ${s.b})` : s.a;
+}
+function paintPaper(x, w, h){
+  const s = paperStops(S.bg);
+  if(!s.grad){ x.fillStyle = s.a; x.fillRect(0, 0, w, h); return; }
+  const r = s.ang * Math.PI / 180;
+  const dx = Math.sin(r), dy = -Math.cos(r);
+  const half = (Math.abs(w * dx) + Math.abs(h * dy)) / 2;
+  const g = x.createLinearGradient(w/2 - dx*half, h/2 - dy*half, w/2 + dx*half, h/2 + dy*half);
+  g.addColorStop(0, s.a); g.addColorStop(1, s.b);
+  x.fillStyle = g; x.fillRect(0, 0, w, h);
+}
+function paperIsDark(){
+  const s = paperStops(S.bg);
+  return (lum(s.a) + lum(s.b)) / 2 < 140;
+}
+function lum(hex){
+  const c = String(hex).replace("#", "");
+  const full = c.length === 3 ? c.split("").map(x => x + x).join("") : c.slice(0, 6);
+  const n = parseInt(full, 16);
+  if(isNaN(n)) return 255;
+  return 0.2126 * ((n >> 16) & 255) + 0.7152 * ((n >> 8) & 255) + 0.0722 * (n & 255);
+}
 
 const EMOJI = {
   "😀":"😀 😃 😄 😁 😆 😅 🤣 😂 🙂 🙃 😉 😊 😇 🥰 😍 🤩 😘 😋 😜 🤪 😎 🥸 🤓 🧐 😏 😴 🥳 🤠 😭 😱 🤯 🥺 🤗 🤭 🫠",
@@ -72,15 +158,16 @@ const S = {
   bg: "#FFFFFF", caption: CONFIG.defaultCaption, date: true,
   mirror: true, facing: "user", sound: true,
   shots: [], stickers: [], sel: null, cat: "😀",
-  busy: false, gallery: [], custom: {},
+  busy: false, gallery: [], custom: {}, papers: [],
   duo: emptyDuo(), theme: "dark",
-  duoConnectionMode: "code" // 'code' or 'link'
+  duoView: "choice", chat: [], unread: 0, chatCollapsed: false
 };
 function emptyDuo(){
   return {
-    active: false, role: null, peer: null, conn: null, call: null,
-    pendingCall: null, code: null, hostId: null, remoteStream: null,
-    linkToken: null, linkExpiry: null, cameraReady: false
+    active: false, role: null, peer: null, peerOpen: false, conn: null,
+    call: null, pendingCall: null, code: null, hostId: null,
+    remoteStream: null, expiry: null, attempts: 0, lastCall: 0,
+    openT: null, expiryT: null, watchT: null
   };
 }
 
@@ -116,6 +203,9 @@ function toast(msg, kind = ""){
 }
 
 /* ─── steps ───────────────────────────────────────────────── */
+let stepEcho = false;
+function goSilent(n){ stepEcho = true; try{ go(n); } finally { stepEcho = false; } }
+
 function go(n){
   if(n === 3 && S.step !== 3) prepShots();
   if(n !== 3) stopCam();
@@ -126,11 +216,13 @@ function go(n){
   if(n === 2) applyDuoStep2UI();
   if(n === 3) applyDuoStep3UI();
   if(n === 4){ drawPreview(); toast("Thank you for using RyzeBooth ✨", "good"); }
+  /* the host drags the guest along so nobody is left on the wrong screen */
+  if(!stepEcho && S.duo.active && S.duo.role === "host" && (n === 2 || n === 3)) sendDuo({ type: "step", n });
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 $$("[data-go]").forEach(b => b.onclick = () => go(+b.dataset.go));
 $("#toStep4").onclick = () => go(4);
-$("#soloCard").onclick = () => { teardownDuo(); markCardSelected("solo"); go(2); };
+$("#soloCard").onclick = () => { teardownDuo(); releaseCam(); markCardSelected("solo"); go(2); };
 $("#duoCard").onclick = () => openDuoModal();
 
 function markCardSelected(mode){
@@ -154,10 +246,27 @@ function applyDuoStep3UI(){
   const active = S.duo.active;
   $("#stageRemote").hidden = !active;
   $("#camLabelYou").hidden = !active;
-  if(active && !S.duo.remoteStream){
-    $("#camRemote").srcObject = null;
-    $("#remoteMsg").style.display = "grid";
+  $("#chatPanel").hidden = !active;
+  $("#duoNetWrap").hidden = !active;
+  renderChat();
+
+  if(active){
+    /* the room is already open — pick up the stream we already have
+       instead of making them tap "Start camera" again */
+    if(stream){
+      attachLocal();
+      setShoot(S.shots.some(Boolean) && S.shots.every(Boolean) ? "redo" : "shoot");
+    }else{
+      ensureStream().then(() => {
+        attachLocal();
+        setShoot("shoot");
+        beginMedia();
+      }).catch(() => {});
+    }
+    if(S.duo.remoteStream) attachRemote(S.duo.remoteStream);
+    else $("#remoteMsg").style.display = "grid";
   }
+
   $("#camHint").textContent = !active
     ? "Your camera never leaves this device. Photos are only saved when you choose to save them."
     : (S.duo.role === "host"
@@ -244,10 +353,60 @@ function buildTimers(){
   });
 }
 
+const PAPER_KEY = "smora_papers_v1";
+function loadPapers(){
+  try{ S.papers = JSON.parse(localStorage.getItem(PAPER_KEY) || "[]"); }
+  catch(e){ S.papers = []; }
+  if(!Array.isArray(S.papers)) S.papers = [];
+}
+function savePapers(){
+  try{ localStorage.setItem(PAPER_KEY, JSON.stringify(S.papers)); }catch(e){}
+}
+function addPaper(p){
+  if(S.papers.includes(p) || PAPERS.includes(p)){ S.bg = p; buildSwatches(); drawPreview(); return; }
+  S.papers.unshift(p);
+  S.papers = S.papers.slice(0, 24);
+  savePapers();
+  S.bg = p;
+  buildSwatches(); drawPreview();
+  toast("Paper added", "good");
+}
+
 function buildSwatches(){
-  $("#swatches").innerHTML = COLORS.map(c =>
-    `<button class="sw ${S.bg === c ? "on" : ""}" data-c="${c}" style="background:${c}" aria-label="${c}"></button>`).join("");
-  $("#swatches").querySelectorAll("[data-c]").forEach(b => b.onclick = () => { S.bg = b.dataset.c; buildSwatches(); drawPreview(); });
+  const items = [
+    ...PAPERS.map(p => ({ p, mine: false })),
+    ...S.papers.map(p => ({ p, mine: true }))
+  ];
+  $("#swatches").innerHTML = items.map(({ p, mine }) => `
+    <span class="swwrap">
+      <button class="sw ${S.bg === p ? "on" : ""}" data-c="${esc(p)}"
+              style="background:${paperCss(p)}" aria-label="Paper ${esc(p)}"></button>
+      ${mine ? `<i class="swdel" data-rm="${esc(p)}" title="Remove">✕</i>` : ""}
+    </span>`).join("");
+
+  $("#swatches").querySelectorAll("[data-c]").forEach(b => b.onclick = () => {
+    S.bg = b.dataset.c; buildSwatches(); drawPreview();
+  });
+  $("#swatches").querySelectorAll("[data-rm]").forEach(b => b.onclick = e => {
+    e.stopPropagation();
+    S.papers = S.papers.filter(x => x !== b.dataset.rm);
+    savePapers();
+    if(S.bg === b.dataset.rm) S.bg = "#FFFFFF";
+    buildSwatches(); drawPreview();
+  });
+}
+
+function wirePaperTools(){
+  const a = $("#paperA"), b = $("#paperB"), ang = $("#paperAngle");
+  if(!a) return;
+  $("#paperAddSolid").onclick = () => addPaper(a.value.toUpperCase());
+  $("#paperAddBlend").onclick = () => addPaper(`grad:${a.value.toUpperCase()},${b.value.toUpperCase()},${ang.value || 160}`);
+  const live = () => {
+    $("#paperPrev").style.background =
+      `linear-gradient(${ang.value || 160}deg, ${a.value}, ${b.value})`;
+  };
+  [a, b, ang].forEach(el => el.addEventListener("input", live));
+  live();
 }
 
 function buildEmoji(){
@@ -261,11 +420,85 @@ function buildEmoji(){
 
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]));
 
-/* ─── camera ──────────────────────────────────────────────── */
+/* ─── camera ──────────────────────────────────────────────────
+   ONE stream for the whole app. The old build opened a second
+   getUserMedia for the Duo preview; on plenty of phones the
+   camera only hands out one stream at a time, so the second one
+   came back black. Everything now shares this.
+   ───────────────────────────────────────────────────────────── */
 let stream = null;
-function applyCamFilter(){
-  $("#cam").style.filter = LOOKS[S.look].css;
+let camReq = null;
+
+async function ensureStream(force = false){
+  const live = stream && stream.getVideoTracks().some(t => t.readyState === "live");
+  if(live && !force) return stream;
+  if(camReq && !force) return camReq;
+
+  camReq = (async () => {
+    const previous = stream;
+    try{
+      const s = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: S.facing, width: { ideal: 1280 }, height: { ideal: 960 } },
+        audio: false
+      });
+      if(previous) previous.getTracks().forEach(t => t.stop());
+      stream = s;
+      attachLocal();
+      applyCamFilter(); applyMirror();
+      if(S.duo.active) replaceOutgoingTrack();
+      return s;
+    }catch(err){
+      console.error("[camera]", err);
+      camError(err);
+      throw err;
+    }
+  })();
+
+  try{ return await camReq; }
+  finally{ camReq = null; }
 }
+
+function camError(err){
+  const msg = err && err.name === "NotAllowedError"
+    ? "Camera access was blocked. Allow it in your browser's site settings, then try again."
+    : (err && err.name === "NotReadableError"
+        ? "Another app or tab is using the camera. Close it and try again."
+        : "No camera found on this device.");
+  const m = $("#camMsg");
+  if(m){ m.style.display = "grid"; m.textContent = msg; }
+  const d = $("#duoCamMsg");
+  if(d){ d.hidden = false; d.textContent = msg; }
+}
+
+function attachLocal(){
+  ["#cam", "#duoModalCam", "#duoSelfCam"].forEach(sel => {
+    const v = $(sel);
+    if(!v) return;
+    if(v.srcObject !== stream) v.srcObject = stream;
+    if(stream) v.play().catch(() => {});
+  });
+  if(stream){
+    const m = $("#camMsg"); if(m) m.style.display = "none";
+    const d = $("#duoCamMsg"); if(d) d.hidden = true;
+    $("#duoModalCam").style.visibility = "visible";
+  }
+}
+
+/* Swap the track inside a live call instead of renegotiating. */
+function replaceOutgoingTrack(){
+  const pc = S.duo.call && S.duo.call.peerConnection;
+  const track = stream && stream.getVideoTracks()[0];
+  if(!pc || !track) return;
+  pc.getSenders().forEach(sender => {
+    if(sender.track && sender.track.kind === "video") sender.replaceTrack(track).catch(() => {});
+  });
+}
+
+function applyCamFilter(){
+  const css = LOOKS[S.look].css;
+  ["#cam", "#duoModalCam", "#duoSelfCam"].forEach(sel => { const v = $(sel); if(v) v.style.filter = css; });
+}
+
 function prepShots(){
   const n = shotsOf(F());
   if(S.shots.length !== n) S.shots = new Array(n).fill(null);
@@ -274,37 +507,36 @@ function prepShots(){
     ? `${n} shot${n > 1 ? "s" : ""} — each one a single photo with you both in it.`
     : `${n} shot${n > 1 ? "s" : ""}, one after another. Tap any photo to retake it.`;
 }
+
 async function startCam(){
   try{
-    stopCam();
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: S.facing, width: { ideal: 1280 }, height: { ideal: 960 } },
-      audio: false
-    });
-    const v = $("#cam");
-    v.srcObject = stream; await v.play();
-    $("#camMsg").style.display = "none";
+    await ensureStream();
+    attachLocal();
     applyCamFilter(); applyMirror();
-    if(S.duo.active) handleDuoCamReady();
+    if(S.duo.active) beginMedia();
     return true;
   }catch(err){
-    console.error(err);
-    $("#camMsg").style.display = "grid";
-    $("#camMsg").textContent = err.name === "NotAllowedError"
-      ? "Camera access was blocked. Allow it in your browser's site settings, then tap Start camera again."
-      : "No camera found on this device.";
     toast("Camera did not start", "bad");
     return false;
   }
 }
+
+/* Leaving step 3 no longer kills a Duo call. The stream is only
+   released when nothing on screen still needs it. */
 function stopCam(){
-  if(stream){ stream.getTracks().forEach(t => t.stop()); stream = null; }
-  const v = $("#cam"); if(v) v.srcObject = null;
-  if(S.duo.call){ try{ S.duo.call.close(); }catch(e){} S.duo.call = null; }
+  if(S.duo.active) return;
+  if($("#duoModal") && $("#duoModal").classList.contains("on")) return;
+  releaseCam();
 }
+function releaseCam(){
+  if(stream){ stream.getTracks().forEach(t => t.stop()); stream = null; }
+  ["#cam", "#duoModalCam", "#duoSelfCam"].forEach(sel => { const v = $(sel); if(v) v.srcObject = null; });
+  const m = $("#camMsg"); if(m) m.style.display = "grid";
+}
+
 function applyMirror(){
   const on = S.mirror && S.facing === "user";
-  $("#cam").classList.toggle("mir", on);
+  ["#cam", "#duoModalCam", "#duoSelfCam"].forEach(sel => { const v = $(sel); if(v) v.classList.toggle("mir", on); });
   $("#mirBtn").classList.toggle("on", S.mirror);
   $("#mirTog").classList.toggle("on", S.mirror);
   $("#mirTog").setAttribute("aria-checked", S.mirror);
@@ -313,7 +545,8 @@ $("#mirBtn").onclick = () => { S.mirror = !S.mirror; applyMirror(); };
 $("#mirTog").onclick = () => { S.mirror = !S.mirror; applyMirror(); };
 $("#flipBtn").onclick = async () => {
   S.facing = S.facing === "user" ? "environment" : "user";
-  if(stream) await startCam(); else applyMirror();
+  if(stream || S.duo.active){ try{ await ensureStream(true); }catch(e){} }
+  applyMirror();
 };
 
 /* ─── capture ─────────────────────────────────────────────── */
@@ -374,7 +607,7 @@ function duoPair(local, remote){
 
 async function retakeOne(i){
   if(S.busy) return;
-  if(S.duo.active){ toast("Use "Shoot again" to redo a Duo strip", ""); return; }
+  if(S.duo.active){ toast("Use Shoot again to redo a Duo strip", ""); return; }
   if(!stream && !(await startCam())) return;
   setShoot("busy"); S.busy = true;
   await countdown(S.timer);
@@ -461,11 +694,6 @@ function stripSize(f){
     h: f.pad * 2 + f.rows * f.ch + f.gap * (f.rows - 1) + f.foot
   };
 }
-function isDark(hex){
-  const c = hex.replace("#", "");
-  const n = parseInt(c.length === 3 ? c.split("").map(x => x + x).join("") : c, 16);
-  return (0.2126 * ((n>>16)&255) + 0.7152 * ((n>>8)&255) + 0.0722 * (n&255)) < 140;
-}
 function roundRect(x, a, b, w, h, r){
   x.beginPath();
   if(x.roundRect) x.roundRect(a, b, w, h, r);
@@ -478,7 +706,7 @@ function drawStrip(canvas, { withStickers = false, frame = null, shots = null } 
   const { w, h } = stripSize(f);
   canvas.width = w; canvas.height = h;
   const x = canvas.getContext("2d");
-  x.fillStyle = S.bg; x.fillRect(0, 0, w, h);
+  paintPaper(x, w, h);
 
   let i = 0;
   for(let r = 0; r < f.rows; r++) for(let c = 0; c < f.cols; c++, i++){
@@ -494,14 +722,14 @@ function drawStrip(canvas, { withStickers = false, frame = null, shots = null } 
       x.drawImage(s, sx, sy, sw, sh, px, py, f.cw, f.ch);
       x.filter = "none";
     }else{
-      x.fillStyle = isDark(S.bg) ? "rgba(255,255,255,.07)" : "rgba(20,16,19,.07)";
+      x.fillStyle = paperIsDark() ? "rgba(255,255,255,.07)" : "rgba(20,16,19,.07)";
       x.fillRect(px, py, f.cw, f.ch);
     }
     x.restore();
   }
 
   if(f.foot > 0){
-    const ink = isDark(S.bg) ? "#FFF4E4" : "#231A2B";
+    const ink = paperIsDark() ? "#FFF4E4" : "#231A2B";
     const cap = (S.caption || "").trim();
     const baseY = h - f.foot / 2 + f.pad / 3;
     x.textAlign = "center"; x.fillStyle = ink;
@@ -630,103 +858,106 @@ $("#dateTog").onclick = e => {
 };
 
 /* ══════════════════════════════════════════════════════════
-   DUO BOOTH — Enhanced with link-based connection & camera preview
+   DUO BOOTH
+   ──────────────────────────────────────────────────────────
+   One shared camera stream, TURN-backed WebRTC, a watchdog that
+   re-dials when video never arrives, code / link / QR joining,
+   and a text chat that rides the same data channel.
    ══════════════════════════════════════════════════════════ */
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 function genCode(){
-  let s = ""; for(let i = 0; i < 6; i++) s += CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)];
+  let s = "";
+  for(let i = 0; i < 6; i++) s += CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)];
   return s;
 }
 
-// Generate a time-limited link token
-function genLinkToken(){
-  return Math.random().toString(36).substr(2, 12) + Date.now().toString(36);
+/* The link IS the code — no second token to keep in sync. */
+function boothLink(code){
+  return location.origin + location.pathname + "?duo=" + encodeURIComponent(code);
+}
+/* Accepts a bare code, a pasted link, or a link with junk around it. */
+function codeFromText(text){
+  const t = String(text || "").trim();
+  if(!t) return "";
+  const m = t.match(/[?&]duo=([A-Za-z0-9]{4,12})/i);
+  const raw = m ? m[1] : t;
+  return raw.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
 }
 
-function openDuoModal(){
+/* ─── status line (modal + step 3) ────────────────────────── */
+function duoNet(text, kind = ""){
+  [$("#duoNet"), $("#netPill")].forEach(el => {
+    if(!el) return;
+    el.textContent = text;
+    el.className = (el.id === "netPill" ? "netpill " : "hint net ") + kind;
+    el.hidden = !text;
+  });
+}
+
+/* ─── modal ───────────────────────────────────────────────── */
+function openDuoModal(prefill){
   if(typeof Peer === "undefined"){
     toast("Duo Booth couldn't load — check your connection and reload", "bad");
     return;
   }
   teardownDuo();
-  $("#duoCodeIn").value = ""; 
-  $("#duoHostStatus").textContent = ""; 
+  $("#duoCodeIn").value = prefill || "";
+  $("#duoHostStatus").textContent = "";
   $("#duoJoinStatus").textContent = "";
-  $("#duoLinkInput").value = "";
-  showDuoView("choice");
+  duoNet("");
+  showDuoView(prefill ? "join" : "choice");
   $("#duoModal").classList.add("on");
-  
-  // Start camera preview in modal after a short delay
-  setTimeout(() => startDuoPreviewCam(), 100);
+  ensureStream().catch(() => {
+    $("#duoCamMsg").hidden = false;
+    $("#duoModalCam").style.visibility = "hidden";
+  });
 }
-
-// Auto-start camera preview when modal opens
-async function startDuoPreviewCam(){
-  if($("#duoModalCam") && !$("#duoModalCam").srcObject){
-    try{
-      const previewStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: S.facing, width: { ideal: 640 }, height: { ideal: 480 } },
-        audio: false
-      });
-      $("#duoModalCam").srcObject = previewStream;
-      await $("#duoModalCam").play();
-    }catch(err){
-      console.error("Could not start duo preview camera:", err);
-    }
-  }
-}
-
-function closeDuoModal(){ 
-  $("#duoModal").classList.remove("on");
-  stopDuoPreviewCam();
-}
-
-function stopDuoPreviewCam(){
-  const cam = $("#duoModalCam");
-  if(cam && cam.srcObject){
-    cam.srcObject.getTracks().forEach(t => t.stop());
-    cam.srcObject = null;
-  }
-}
+function closeDuoModal(){ $("#duoModal").classList.remove("on"); }
 
 function showDuoView(view){
-  $("#duoChoice").hidden = view !== "choice";
-  $("#duoHostView").hidden = view !== "host";
-  $("#duoJoinView").hidden = view !== "join";
-  $("#duoLinkHostView").hidden = view !== "linkhost";
-  $("#duoLinkJoinView").hidden = view !== "linkjoin";
+  S.duoView = view;
+  $("#duoChoice").hidden        = view !== "choice";
+  $("#duoHostView").hidden      = view !== "host";
+  $("#duoJoinView").hidden      = view !== "join";
   $("#duoConnectedView").hidden = view !== "connected";
-  $("#duoBackBtn").hidden = view === "choice" || view === "connected";
+  $("#duoBackBtn").hidden       = view === "choice" || view === "connected";
+  $("#duoCancelBtn").hidden     = view === "connected";
+  $("#duoPreviewWrap").hidden   = view === "connected";
+  $("#duoSub").textContent = {
+    choice:    "Connect your camera with someone else's, live.",
+    host:      "Share the code, the link, or the QR — whichever is easiest.",
+    join:      "Paste the code or the link your partner sent you.",
+    connected: "You're both in. Both cameras are already open."
+  }[view] || "";
 }
 
-$("#duoClose").onclick = () => { teardownDuo(); closeDuoModal(); };
+$("#duoClose").onclick     = () => { teardownDuo(); closeDuoModal(); };
 $("#duoCancelBtn").onclick = () => { teardownDuo(); closeDuoModal(); };
-$("#duoModal").addEventListener("click", e => { if(e.target.id === "duoModal"){ teardownDuo(); closeDuoModal(); } });
-$("#duoBackBtn").onclick = () => { teardownDuo(); showDuoView("choice"); };
+$("#duoModal").addEventListener("click", e => { if(e.target.id === "duoModal" && !S.duo.active){ teardownDuo(); closeDuoModal(); } });
+$("#duoBackBtn").onclick   = () => { teardownDuo(); showDuoView("choice"); };
 
-// Code-based connection
-$("#duoHostBtn").onclick = () => duoHost();
-$("#duoJoinBtn").onclick = () => { showDuoView("join"); $("#duoCodeIn").focus(); };
+$("#duoHostBtn").onclick   = () => duoHost();
+$("#duoNewCodeBtn").onclick = () => duoHost();
+$("#duoJoinBtn").onclick   = () => { showDuoView("join"); $("#duoCodeIn").focus(); };
 $("#duoConnectBtn").onclick = () => duoJoin($("#duoCodeIn").value);
 $("#duoCodeIn").addEventListener("keydown", e => { if(e.key === "Enter") $("#duoConnectBtn").click(); });
-$("#duoCopyBtn").onclick = async () => {
-  try{ await navigator.clipboard.writeText(S.duo.code || ""); toast("Code copied", "good"); }
-  catch(e){ toast("Couldn't copy — select and copy it manually", "bad"); }
-};
 
-// Link-based connection (5-minute expiry)
-$("#duoLinkHostBtn").onclick = () => duoLinkHost();
-$("#duoLinkJoinBtn").onclick = () => { showDuoView("linkjoin"); $("#duoLinkInput").focus(); };
-$("#duoLinkConnectBtn").onclick = () => duoLinkJoin($("#duoLinkInput").value);
-$("#duoLinkInput").addEventListener("keydown", e => { if(e.key === "Enter") $("#duoLinkConnectBtn").click(); });
-$("#duoLinkCopyBtn").onclick = async () => {
-  try{ 
-    const link = `${window.location.origin}?duo=${S.duo.linkToken}`;
-    await navigator.clipboard.writeText(link); 
-    toast("Link copied", "good"); 
+$("#duoCopyBtn").onclick = () => copyText(S.duo.code || "", "Code copied");
+$("#duoLinkCopyBtn").onclick = () => copyText(S.duo.code ? boothLink(S.duo.code) : "", "Link copied");
+$("#duoShareBtn").onclick = async () => {
+  const link = S.duo.code ? boothLink(S.duo.code) : "";
+  if(!link) return;
+  if(navigator.share){
+    try{ await navigator.share({ title: CONFIG.name, text: "Join my photo booth", url: link }); return; }
+    catch(e){ if(e && e.name === "AbortError") return; }
   }
-  catch(e){ toast("Couldn't copy — select and copy it manually", "bad"); }
+  copyText(link, "Link copied");
 };
+async function copyText(text, okMsg){
+  if(!text) return;
+  try{ await navigator.clipboard.writeText(text); toast(okMsg, "good"); }
+  catch(e){ toast("Couldn't copy — select it and copy manually", "bad"); }
+}
 
 $("#duoContinueBtn").onclick = () => {
   closeDuoModal();
@@ -736,209 +967,391 @@ $("#duoContinueBtn").onclick = () => {
   go(2);
 };
 
+/* ─── QR ──────────────────────────────────────────────────── */
+function renderQR(code){
+  const box = $("#duoQr");
+  if(!box) return;
+  box.innerHTML = "";
+  if(typeof QRCode === "undefined"){ $("#duoQrWrap").hidden = true; return; }
+  try{
+    new QRCode(box, {
+      text: boothLink(code),
+      width: 168, height: 168,
+      colorDark: "#141013", colorLight: "#ffffff",
+      correctLevel: QRCode.CorrectLevel.M
+    });
+    $("#duoQrWrap").hidden = false;
+  }catch(e){ $("#duoQrWrap").hidden = true; }
+}
+
+/* ─── hosting ─────────────────────────────────────────────── */
 function duoHost(){
+  teardownDuo();
   showDuoView("host");
-  $("#duoCodeOut").textContent = "••••••";
-  $("#duoHostStatus").textContent = "Connecting…";
-  S.duo.role = "host";
-  S.duo.connectionMode = "code";
+  ensureStream().catch(() => {});
+
   const code = genCode();
-  S.duo.code = code;
-  const peer = new Peer(CONFIG.duoPeerPrefix + code.toLowerCase(), { 
-    config: { iceServers: CONFIG.duoIceServers }
-  });
-  S.duo.peer = peer;
-  
-  const connTimeout = setTimeout(() => {
-    if(!S.duo.peer) return;
-    $("#duoHostStatus").textContent = "Connection timeout. Make sure the code is correct.";
-  }, CONFIG.connectionTimeout);
-  
-  peer.on("open", () => {
-    clearTimeout(connTimeout);
-    $("#duoCodeOut").textContent = code;
-    $("#duoHostStatus").textContent = "Share this code — waiting for your partner to join…";
-  });
-  peer.on("connection", conn => { S.duo.conn = conn; wireDuoData(conn); });
-  peer.on("call", call => {
-    if(stream){ call.answer(stream); wireCall(call); }
-    else S.duo.pendingCall = call;
-  });
-  peer.on("error", err => {
-    clearTimeout(connTimeout);
-    console.error(err);
-    $("#duoHostStatus").textContent = "Connection problem — close this and try again.";
-  });
-}
-
-function duoLinkHost(){
-  showDuoView("linkhost");
-  $("#duoLinkHostStatus").textContent = "Generating link…";
   S.duo.role = "host";
-  S.duo.connectionMode = "link";
-  const token = genLinkToken();
-  S.duo.linkToken = token;
-  S.duo.linkExpiry = Date.now() + (5 * 60 * 1000); // 5 minutes
-  
-  const code = token.substring(0, 6).toUpperCase();
   S.duo.code = code;
-  
-  const peer = new Peer(CONFIG.duoPeerPrefix + code.toLowerCase(), { 
-    config: { iceServers: CONFIG.duoIceServers }
+  S.duo.expiry = Date.now() + CONFIG.linkMinutes * 60 * 1000;
+
+  $("#duoCodeOut").textContent = code;
+  $("#duoLinkOut").value = boothLink(code);
+  $("#duoHostStatus").textContent = "Opening the room…";
+  renderQR(code);
+  startExpiryClock();
+
+  const peer = new Peer(CONFIG.duoPeerPrefix + code.toLowerCase(), {
+    config: { iceServers: CONFIG.duoIceServers, iceCandidatePoolSize: 4 }
   });
   S.duo.peer = peer;
-  
-  const connTimeout = setTimeout(() => {
-    if(!S.duo.peer) return;
-    $("#duoLinkHostStatus").textContent = "Link expired. Generate a new one.";
+  wirePeer(peer);
+
+  S.duo.openT = setTimeout(() => {
+    if(S.duo.peer === peer && !S.duo.peerOpen)
+      $("#duoHostStatus").textContent = "Still opening the room — if this sticks, tap New code.";
   }, CONFIG.connectionTimeout);
-  
+
   peer.on("open", () => {
-    clearTimeout(connTimeout);
-    updateLinkExpiry();
-    $("#duoLinkHostStatus").textContent = "Link ready — waiting for your partner to join…";
-  });
-  peer.on("connection", conn => { S.duo.conn = conn; wireDuoData(conn); });
-  peer.on("call", call => {
-    if(stream){ call.answer(stream); wireCall(call); }
-    else S.duo.pendingCall = call;
-  });
-  peer.on("error", err => {
-    clearTimeout(connTimeout);
-    console.error(err);
-    $("#duoLinkHostStatus").textContent = "Connection problem — close this and try again.";
+    S.duo.peerOpen = true;
+    clearTimeout(S.duo.openT);
+    $("#duoHostStatus").textContent = "Waiting for your partner to join…";
   });
 }
 
-function updateLinkExpiry(){
-  if(!S.duo.linkExpiry) return;
-  const remaining = Math.max(0, Math.floor((S.duo.linkExpiry - Date.now()) / 1000));
-  const el = $("#duoLinkExpiry");
-  if(el) el.textContent = `expires in ${remaining}s`;
-  if(remaining > 0){
-    setTimeout(updateLinkExpiry, 1000);
-  } else {
-    if(el) el.textContent = "expired";
-    if(S.duo.active === false) teardownDuo();
-  }
+function startExpiryClock(){
+  clearInterval(S.duo.expiryT);
+  const tick = () => {
+    if(!S.duo.expiry) return;
+    if(S.duo.active){ $("#duoExpiry").textContent = ""; clearInterval(S.duo.expiryT); return; }
+    const left = Math.max(0, Math.round((S.duo.expiry - Date.now()) / 1000));
+    const m = Math.floor(left / 60), s = String(left % 60).padStart(2, "0");
+    $("#duoExpiry").textContent = left > 0
+      ? `This code works for another ${m}:${s}`
+      : "This code has expired — tap New code.";
+    if(left <= 0){
+      clearInterval(S.duo.expiryT);
+      $("#duoHostStatus").textContent = "Expired. Tap New code for a fresh one.";
+    }
+  };
+  tick();
+  S.duo.expiryT = setInterval(tick, 1000);
 }
 
-function duoJoin(codeRaw){
-  const code = (codeRaw || "").trim().toUpperCase();
-  if(!code){ $("#duoJoinStatus").textContent = "Enter a code first."; return; }
+/* ─── joining ─────────────────────────────────────────────── */
+function duoJoin(raw){
+  const code = codeFromText(raw);
+  if(code.length < 4){ $("#duoJoinStatus").textContent = "Paste the code or the link first."; return; }
+  const keepView = S.duoView;
+  teardownDuo();
+  showDuoView(keepView === "join" ? "join" : "join");
+  $("#duoCodeIn").value = code;
   $("#duoJoinStatus").textContent = "Connecting…";
+  ensureStream().catch(() => {});
+
   S.duo.role = "guest";
+  S.duo.code = code;
   S.duo.hostId = CONFIG.duoPeerPrefix + code.toLowerCase();
-  const peer = new Peer({ config: { iceServers: CONFIG.duoIceServers } });
+
+  const peer = new Peer({ config: { iceServers: CONFIG.duoIceServers, iceCandidatePoolSize: 4 } });
   S.duo.peer = peer;
-  
-  const connTimeout = setTimeout(() => {
-    if(!S.duo.peer) return;
-    $("#duoJoinStatus").textContent = "Couldn't find that code — check it and try again.";
+  wirePeer(peer);
+
+  S.duo.openT = setTimeout(() => {
+    if(S.duo.peer === peer && !S.duo.active)
+      $("#duoJoinStatus").textContent = "No answer yet — check the code, and make sure your partner still has their booth open.";
   }, CONFIG.connectionTimeout);
-  
+
   peer.on("open", () => {
-    clearTimeout(connTimeout);
+    S.duo.peerOpen = true;
     const conn = peer.connect(S.duo.hostId, { reliable: true });
     S.duo.conn = conn;
     wireDuoData(conn);
-  });
-  peer.on("error", err => {
-    clearTimeout(connTimeout);
-    console.error(err);
-    $("#duoJoinStatus").textContent = "Couldn't find that code — check it and try again.";
   });
 }
 
-function duoLinkJoin(token){
-  const t = (token || "").trim().toUpperCase();
-  if(!t){ $("#duoLinkJoinStatus").textContent = "Enter a link or code first."; return; }
-  $("#duoLinkJoinStatus").textContent = "Connecting…";
-  S.duo.role = "guest";
-  const code = t.substring(0, 6);
-  S.duo.hostId = CONFIG.duoPeerPrefix + code.toLowerCase();
-  const peer = new Peer({ config: { iceServers: CONFIG.duoIceServers } });
-  S.duo.peer = peer;
-  
-  const connTimeout = setTimeout(() => {
-    if(!S.duo.peer) return;
-    $("#duoLinkJoinStatus").textContent = "Couldn't connect — link may have expired.";
-  }, CONFIG.connectionTimeout);
-  
-  peer.on("open", () => {
-    clearTimeout(connTimeout);
-    const conn = peer.connect(S.duo.hostId, { reliable: true });
+/* ─── peer plumbing (both roles) ──────────────────────────── */
+function wirePeer(peer){
+  peer.on("connection", conn => {
+    if(S.duo.conn && S.duo.conn.open){ try{ conn.close(); }catch(e){} return; }
     S.duo.conn = conn;
     wireDuoData(conn);
   });
+
+  /* Both sides listen for calls, so whoever is ready first can dial. */
+  peer.on("call", call => {
+    if(stream){ answerCall(call); return; }
+    S.duo.pendingCall = call;
+    ensureStream().then(() => {
+      if(S.duo.pendingCall === call){ answerCall(call); S.duo.pendingCall = null; }
+    }).catch(() => {});
+  });
+
+  peer.on("disconnected", () => {
+    duoNet("Signalling dropped — reconnecting…", "bad");
+    try{ peer.reconnect(); }catch(e){}
+  });
+
   peer.on("error", err => {
-    clearTimeout(connTimeout);
-    console.error(err);
-    $("#duoLinkJoinStatus").textContent = "Couldn't connect — link may have expired.";
+    console.error("[duo]", err && err.type, err);
+    clearTimeout(S.duo.openT);
+    const t = err && err.type;
+    let msg = "Connection problem — close this and try again.";
+    if(t === "peer-unavailable") msg = "Nobody is hosting with that code right now. Check it, or ask for a new one.";
+    if(t === "unavailable-id")   msg = "That code is already taken — tap New code.";
+    if(t === "network")          msg = "Lost the signalling server — check your internet and try again.";
+    if(t === "browser-incompatible") msg = "This browser can't do live video. Try Chrome or Safari.";
+    if(S.duo.role === "host") $("#duoHostStatus").textContent = msg;
+    else $("#duoJoinStatus").textContent = msg;
+    if(S.duo.active) duoNet(msg, "bad");
   });
 }
 
 function wireDuoData(conn){
-  conn.on("open", () => {
+  conn.on("open", async () => {
+    clearTimeout(S.duo.openT);
     S.duo.active = true;
+    S.duo.attempts = 0;
+    clearInterval(S.duo.expiryT);
     showDuoView("connected");
+    $("#duoJoinStatus").textContent = "";
+    duoNet("Connected — opening cameras…");
+    renderChat();
+    applyDuoStep3UI();
+
     if(S.duo.role === "host") sendDuo({ type: "config", frame: S.frame, look: S.look, timer: S.timer });
+
+    try{ await ensureStream(); }catch(e){}
+    beginMedia();
+    startMediaWatchdog();
   });
+
   conn.on("data", handleDuoData);
   conn.on("close", () => {
     if(S.duo.active) toast("Your partner disconnected", "bad");
+    const wasActive = S.duo.active;
     teardownDuo();
     applyDuoStep2UI(); applyDuoStep3UI();
+    if(wasActive && $("#duoModal").classList.contains("on")) showDuoView("choice");
   });
-  conn.on("error", e => console.error(e));
+  conn.on("error", e => console.error("[duo conn]", e));
 }
-function sendDuo(msg){ if(S.duo.conn && S.duo.conn.open) S.duo.conn.send(msg); }
+
+function sendDuo(msg){
+  try{ if(S.duo.conn && S.duo.conn.open) S.duo.conn.send(msg); }catch(e){}
+}
+
 function handleDuoData(msg){
   if(!msg || !msg.type) return;
   if(msg.type === "config"){
     S.frame = msg.frame; S.look = msg.look; S.timer = msg.timer;
     buildChips($("#looks2"), LOOKS, "look"); buildChips($("#looks3"), LOOKS, "look");
     buildTimers(); prepShots();
+    buildLayouts($("#layouts"), false, layoutFilter());
   }
   if(msg.type === "shoot") runSequence(true);
+  if(msg.type === "ready" && S.duo.role === "guest") placeCall();
+  if(msg.type === "recall") placeCall();
+  if(msg.type === "step" && S.duo.role === "guest"){
+    if($("#duoModal").classList.contains("on")){ closeDuoModal(); markCardSelected("duo"); }
+    goSilent(msg.n);
+  }
+  if(msg.type === "chat") pushChat("them", msg.text);
+  if(msg.type === "bye"){ toast("Your partner left", "bad"); teardownDuo(); applyDuoStep3UI(); }
+}
+
+/* ─── media: get video flowing, and keep it flowing ───────── */
+function beginMedia(){
+  if(!S.duo.peer || !stream) return;
+  attachLocal();
+  if(S.duo.role === "guest"){
+    placeCall();
+  }else{
+    if(S.duo.pendingCall){ answerCall(S.duo.pendingCall); S.duo.pendingCall = null; }
+    sendDuo({ type: "ready" });          // tell the guest we can answer now
+  }
+}
+
+function placeCall(){
+  if(!S.duo.peer || !stream) return;
+  if(S.duo.role !== "guest" || !S.duo.hostId) return;
+  /* both "ready" and beginMedia() can fire within a few ms of each
+     other — don't tear a perfectly good call down to redial it */
+  const now = Date.now();
+  if(now - S.duo.lastCall < 1500) return;
+  S.duo.lastCall = now;
+  try{ S.duo.call && S.duo.call.close(); }catch(e){}
+  S.duo.call = null;
+  S.duo.attempts++;
+  duoNet(S.duo.attempts > 1 ? `Connecting video… (try ${S.duo.attempts})` : "Connecting video…");
+  try{ wireCall(S.duo.peer.call(S.duo.hostId, stream)); }
+  catch(e){ console.error("[duo call]", e); }
+}
+
+function answerCall(call){
+  if(!stream) return;
+  try{ call.answer(stream); wireCall(call); }
+  catch(e){ console.error("[duo answer]", e); }
 }
 
 function wireCall(call){
   S.duo.call = call;
+
   call.on("stream", remote => {
     S.duo.remoteStream = remote;
-    S.duo.cameraReady = true;
-    $("#camRemote").srcObject = remote;
-    $("#stageRemote").hidden = false;
-    $("#remoteMsg").style.display = "none";
+    S.duo.attempts = 0;
+    attachRemote(remote);
+    duoNet("Video connected", "good");
   });
-  call.on("close", teardownRemoteVideo);
-  call.on("error", teardownRemoteVideo);
+  call.on("close", () => { if(S.duo.call === call) teardownRemoteVideo(); });
+  call.on("error", e => { console.error("[duo media]", e); if(S.duo.call === call) teardownRemoteVideo(); });
+
+  const pc = call.peerConnection;
+  if(!pc) return;
+  pc.addEventListener("iceconnectionstatechange", () => {
+    if(S.duo.call !== call) return;
+    const st = pc.iceConnectionState;
+    if(st === "checking")  duoNet("Finding a path between you…");
+    if(st === "connected" || st === "completed"){
+      duoNet("Video connected", "good");
+      reportPath(pc);
+    }
+    if(st === "disconnected") duoNet("Video dropped — trying to recover…", "bad");
+    if(st === "failed"){
+      duoNet("Direct path failed — retrying through the relay…", "bad");
+      retryMedia();
+    }
+  });
 }
+
+/* Tells you in the console whether you ended up on a relay — handy
+   when someone reports a black screen from far away. */
+async function reportPath(pc){
+  try{
+    const stats = await pc.getStats();
+    let pair = null, local = null;
+    stats.forEach(r => { if(r.type === "candidate-pair" && r.state === "succeeded" && r.nominated !== false) pair = r; });
+    if(pair) stats.forEach(r => { if(r.id === pair.localCandidateId) local = r; });
+    if(local) console.log("[duo] video path:", local.candidateType, local.protocol || "");
+  }catch(e){}
+}
+
+function attachRemote(remote){
+  [$("#camRemote"), $("#duoRemoteCam")].forEach(v => {
+    if(!v) return;
+    if(v.srcObject !== remote) v.srcObject = remote;
+    v.play().catch(() => {});
+  });
+  $("#stageRemote").hidden = false;
+  $("#remoteMsg").style.display = "none";
+  $("#duoRemoteMsg").hidden = true;
+}
+
 function teardownRemoteVideo(){
   S.duo.remoteStream = null;
-  S.duo.cameraReady = false;
-  $("#camRemote").srcObject = null;
-  $("#remoteMsg").style.display = "grid";
+  [$("#camRemote"), $("#duoRemoteCam")].forEach(v => { if(v) v.srcObject = null; });
+  const rm = $("#remoteMsg"); if(rm) rm.style.display = "grid";
+  const dm = $("#duoRemoteMsg"); if(dm) dm.hidden = false;
 }
-function handleDuoCamReady(){
-  if(S.duo.role === "host" && S.duo.pendingCall){
-    try{ S.duo.pendingCall.answer(stream); wireCall(S.duo.pendingCall); }catch(e){}
-    S.duo.pendingCall = null;
-  }else if(S.duo.role === "guest" && S.duo.peer && S.duo.hostId){
-    if(S.duo.call){ try{ S.duo.call.close(); }catch(e){} }
-    try{ wireCall(S.duo.peer.call(S.duo.hostId, stream)); }catch(e){ console.error(e); }
+
+/* Re-dials until video actually arrives. This is what turns a
+   permanent black screen into a few seconds of "Connecting…". */
+function startMediaWatchdog(){
+  clearInterval(S.duo.watchT);
+  S.duo.watchT = setInterval(() => {
+    if(!S.duo.active){ clearInterval(S.duo.watchT); return; }
+    const live = S.duo.remoteStream && S.duo.remoteStream.getVideoTracks().some(t => t.readyState === "live");
+    if(live) return;
+    if(!stream){ ensureStream().catch(() => {}); return; }
+    if(S.duo.attempts >= CONFIG.maxVideoRetries){
+      duoNet("Still no video. Tap Retry video, or try mobile data instead of Wi-Fi.", "bad");
+      return;
+    }
+    retryMedia();
+  }, CONFIG.videoRetryEvery);
+}
+function retryMedia(){
+  if(!S.duo.active) return;
+  if(S.duo.role === "guest") placeCall();
+  else { sendDuo({ type: "recall" }); duoNet("Asking your partner's camera to reconnect…"); }
+}
+$$(".retryVideo").forEach(b => b.onclick = async () => {
+  try{ await ensureStream(true); }catch(e){}
+  S.duo.attempts = 0;
+  retryMedia();
+});
+
+/* ─── chat over the data channel ──────────────────────────── */
+function pushChat(who, text){
+  const clean = String(text || "").slice(0, 400).trim();
+  if(!clean) return;
+  S.chat.push({ who, text: clean, at: Date.now() });
+  if(S.chat.length > 200) S.chat = S.chat.slice(-200);
+  if(who === "them"){
+    beep(880, .05, .1);
+    const visible = $("#duoModal").classList.contains("on") || S.step === 3;
+    if(!visible || S.chatCollapsed) S.unread++;
   }
+  renderChat();
 }
+function sendChat(inputSel){
+  const el = $(inputSel);
+  if(!el) return;
+  const text = el.value.trim();
+  if(!text) return;
+  if(!S.duo.active){ toast("You're not connected to anyone yet", "bad"); return; }
+  el.value = "";
+  sendDuo({ type: "chat", text });
+  pushChat("me", text);
+}
+function renderChat(){
+  const html = S.chat.length
+    ? S.chat.map(m => `<div class="msg ${m.who}"><span>${esc(m.text)}</span></div>`).join("")
+    : `<p class="hint" style="margin:0">Say hi — messages stay between the two of you.</p>`;
+  ["#duoChatLog", "#chatLog"].forEach(sel => {
+    const el = $(sel);
+    if(!el) return;
+    el.innerHTML = html;
+    el.scrollTop = el.scrollHeight;
+  });
+  const badge = $("#chatBadge");
+  if(badge){ badge.textContent = S.unread || ""; badge.hidden = !S.unread; }
+  const panel = $("#chatPanel");
+  if(panel) panel.hidden = !S.duo.active;
+}
+$("#duoChatSend").onclick = () => sendChat("#duoChatIn");
+$("#chatSend").onclick    = () => sendChat("#chatIn");
+$("#duoChatIn").addEventListener("keydown", e => { if(e.key === "Enter"){ e.preventDefault(); sendChat("#duoChatIn"); } });
+$("#chatIn").addEventListener("keydown", e => { if(e.key === "Enter"){ e.preventDefault(); sendChat("#chatIn"); } });
+$$("[data-quick]").forEach(b => b.onclick = () => {
+  if(!S.duo.active) return;
+  sendDuo({ type: "chat", text: b.dataset.quick });
+  pushChat("me", b.dataset.quick);
+});
+["#duoChatLog", "#chatLog"].forEach(sel => {
+  const el = $(sel);
+  if(el) el.addEventListener("click", () => { S.unread = 0; renderChat(); });
+});
+
+/* ─── teardown ────────────────────────────────────────────── */
 function teardownDuo(){
+  clearTimeout(S.duo.openT);
+  clearInterval(S.duo.expiryT);
+  clearInterval(S.duo.watchT);
+  if(S.duo.active) sendDuo({ type: "bye" });
   try{ S.duo.call && S.duo.call.close(); }catch(e){}
   try{ S.duo.conn && S.duo.conn.close(); }catch(e){}
   try{ S.duo.peer && S.duo.peer.destroy(); }catch(e){}
   S.duo = emptyDuo();
+  S.chat = []; S.unread = 0;
   teardownRemoteVideo();
+  renderChat();
+  duoNet("");
   $("#stageRemote").hidden = true;
   $("#camLabelYou").hidden = true;
+  $("#duoExpiry").textContent = "";
 }
+window.addEventListener("beforeunload", () => { if(S.duo.active) sendDuo({ type: "bye" }); });
 
 /* ─── save (device + Discord) ─────────────────────────────── */
 async function postToDiscord(blob){
@@ -1137,6 +1550,7 @@ $("#fImport").addEventListener("change", e => {
   $("#brandName").textContent = CONFIG.name;
   loadTheme();
   loadCustom();
+  loadPapers();
 
   try{
     const res = await fetch("strips.json", { cache: "no-store" });
@@ -1146,18 +1560,22 @@ $("#fImport").addEventListener("change", e => {
   buildLayouts($("#layouts"), false, layoutFilter());
   buildChips($("#looks2"), LOOKS, "look");
   buildChips($("#looks3"), LOOKS, "look");
-  buildTimers(); buildSwatches(); buildEmoji();
-  renderStkBar(); setShoot("start"); prepShots();
+  buildTimers(); buildSwatches(); wirePaperTools(); buildEmoji();
+  renderStkBar(); setShoot("start"); prepShots(); renderChat();
   $("#caption").value = S.caption;
   go(1);
 
-  // Check for link-based duo invite in URL
+  /* someone opened a shared link or scanned the QR */
   const params = new URLSearchParams(location.search);
-  if(params.has("duo")){ 
-    const token = params.get("duo");
-    openDuoModal();
-    setTimeout(() => { showDuoView("linkjoin"); $("#duoLinkInput").value = token; }, 300);
+  if(params.has("duo")){
+    const code = codeFromText(params.get("duo"));
+    history.replaceState(null, "", location.pathname);
+    if(code){
+      markCardSelected("duo");
+      openDuoModal(code);
+      setTimeout(() => duoJoin(code), 400);
+    }
   }
-  
+
   if(params.has("admin")) openAdmin();
 })();
