@@ -694,7 +694,7 @@ hr{border:0;border-top:1px solid var(--line);margin:22px 0}
     <!-- host -->
     <div id="duoHostView" hidden style="margin-top:18px">
       <span class="label">Your code</span>
-      <div class="duoCode" id="duoCodeOut">••••••</div>
+      <div class="duoCode" id="duoCodeOut">••••••••</div>
       <button class="btn ghost wide" id="duoCopyBtn" style="margin-top:10px">Copy code</button>
 
       <div style="margin-top:18px;padding-top:18px;border-top:1px solid var(--line)">
@@ -721,7 +721,7 @@ hr{border:0;border-top:1px solid var(--line);margin:22px 0}
     <div id="duoJoinView" hidden style="margin-top:18px">
       <div class="field">
         <span class="label">Code or link</span>
-        <input type="text" id="duoCodeIn" placeholder="PZK4QD — or paste the whole link" autocomplete="off" autocapitalize="characters">
+        <input type="text" id="duoCodeIn" placeholder="PZK4QD7M — or paste the whole link" autocomplete="off" autocapitalize="characters">
       </div>
       <button class="btn primary wide" id="duoConnectBtn" style="margin-top:14px">Connect</button>
       <p class="hint" id="duoJoinStatus"></p>
@@ -767,8 +767,9 @@ hr{border:0;border-top:1px solid var(--line);margin:22px 0}
   </div>
 </div>
 
-<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js" referrerpolicy="no-referrer"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" referrerpolicy="no-referrer"></script>
+<script src="ice.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

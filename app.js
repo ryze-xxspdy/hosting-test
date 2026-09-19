@@ -9,7 +9,6 @@
 
 const CONFIG = {
   name: "RyzeBooth",
-  adminPass: "ryze2026",            // change this
   discordEndpoint: "/api/discord",  // Vercel function; leave as is
   defaultCaption: "",
   maxShots: 8,
@@ -24,11 +23,11 @@ const CONFIG = {
      never found a path. A TURN server relays the video when no
      direct path exists.
 
-     The openrelay entries below are a FREE public TURN service.
-     They prove the fix works, but they are rate limited and come
-     with no uptime promise. For anything you care about, put
-     your own credentials here — Metered, Twilio, Cloudflare
-     Calls, or a self-hosted coturn.
+     Real credentials now come from /api/ice (see api/ice.js and
+     SECURITY_AND_RELIABILITY.md) so no relay password is ever in
+     this file. The list below is only the LAST-RESORT fallback,
+     used if that endpoint cannot be reached. The openrelay entries
+     are a free public service: rate limited, no uptime promise.
      ───────────────────────────────────────────────────────── */
   duoIceServers: [
     { urls: "stun:stun.l.google.com:19302" },
@@ -38,9 +37,22 @@ const CONFIG = {
       username: "openrelayproject", credential: "openrelayproject" },
     { urls: "turn:openrelay.metered.ca:443",
       username: "openrelayproject", credential: "openrelayproject" },
-    { urls: "turn:openrelay.metered.ca:443?transport=tcp",
+    { urls: "turns:openrelay.metered.ca:443?transport=tcp",
       username: "openrelayproject", credential: "openrelayproject" }
   ],
+
+  /* Optional: your own signalling server (see peer-server/). The free
+     public PeerJS broker is a single shared service; if it hiccups,
+     nobody can start a call. Leave null to keep using it. Example:
+       { host: "ryze-peer.onrender.com", port: 443, path: "/ryzebooth",
+         secure: true, key: "peerjs" }                                 */
+  peerServer: null,
+
+  codeLength: 8,              // 32^8 ≈ 1 trillion codes; 6 was guessable in a 5-minute window
+  relayAfterAttempts: 2,      // after this many failed dials, force relay-only (TURN) mode
+  bitrateDirectKbps: 1800,    // outgoing video cap on a direct path
+  bitrateRelayKbps: 900,      // …and through a relay / weak mobile link
+  chatBurst: 8, chatBurstMs: 5000,   // incoming-message flood guard
 
   connectionTimeout: 20000,   // how long before we tell the user something is wrong
   linkMinutes: 5,             // how long a hosted code / link stays valid
@@ -162,12 +174,14 @@ const S = {
   duo: emptyDuo(), theme: "dark",
   duoView: "choice", chat: [], unread: 0, chatCollapsed: false
 };
+let duoSeq = 0;   // bumps on every host/join/teardown so a slow async step can tell it was superseded
 function emptyDuo(){
   return {
     active: false, role: null, peer: null, peerOpen: false, conn: null,
     call: null, pendingCall: null, code: null, hostId: null,
     remoteStream: null, expiry: null, attempts: 0, lastCall: 0,
-    openT: null, expiryT: null, watchT: null
+    openT: null, expiryT: null, watchT: null, discT: null,
+    relay: false, wake: null, chatTimes: []
   };
 }
 
@@ -866,8 +880,12 @@ $("#dateTog").onclick = e => {
    ══════════════════════════════════════════════════════════ */
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 function genCode(){
+  /* crypto RNG, not Math.random (predictable). 32 symbols divides 256
+     evenly, so taking each byte mod 32 introduces no bias. */
+  const bytes = new Uint8Array(CONFIG.codeLength);
+  crypto.getRandomValues(bytes);
   let s = "";
-  for(let i = 0; i < 6; i++) s += CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)];
+  for(const b of bytes) s += CODE_CHARS[b % CODE_CHARS.length];
   return s;
 }
 
@@ -879,9 +897,9 @@ function boothLink(code){
 function codeFromText(text){
   const t = String(text || "").trim();
   if(!t) return "";
-  const m = t.match(/[?&]duo=([A-Za-z0-9]{4,12})/i);
+  const m = t.match(/[?&]duo=([A-Za-z0-9]{4,16})/i);
   const raw = m ? m[1] : t;
-  return raw.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
+  return raw.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, CONFIG.codeLength);
 }
 
 /* ─── status line (modal + step 3) ────────────────────────── */
@@ -985,8 +1003,29 @@ function renderQR(code){
 }
 
 /* ─── hosting ─────────────────────────────────────────────── */
-function duoHost(){
+function makePeer(id, servers){
+  const opts = { config: ICE.rtcConfig(servers, false), debug: 0 };
+  if(CONFIG.peerServer) Object.assign(opts, CONFIG.peerServer);
+  return id ? new Peer(id, opts) : new Peer(opts);
+}
+
+/* Early warning: if we can't even reach a relay, say so now rather
+   than after a black screen. */
+function checkPath(servers, seq){
+  ICE.probe(servers).then(r => {
+    console.log("[duo] network probe:", r);
+    if(seq !== duoSeq || S.duo.active) return;
+    if(!r.relay && !r.srflx){
+      duoNet("Your network is blocking live video. Try mobile data or a different Wi-Fi.", "bad");
+    }else if(!r.relay){
+      console.warn("[duo] no relay candidate — hard-NAT partners may not connect");
+    }
+  });
+}
+
+async function duoHost(){
   teardownDuo();
+  const seq = ++duoSeq;
   showDuoView("host");
   ensureStream().catch(() => {});
 
@@ -1001,9 +1040,11 @@ function duoHost(){
   renderQR(code);
   startExpiryClock();
 
-  const peer = new Peer(CONFIG.duoPeerPrefix + code.toLowerCase(), {
-    config: { iceServers: CONFIG.duoIceServers, iceCandidatePoolSize: 4 }
-  });
+  const servers = await ICE.get();
+  if(seq !== duoSeq) return;                 // user tapped New code / Back meanwhile
+  checkPath(servers, seq);
+
+  const peer = makePeer(CONFIG.duoPeerPrefix + code.toLowerCase(), servers);
   S.duo.peer = peer;
   wirePeer(peer);
 
@@ -1031,6 +1072,8 @@ function startExpiryClock(){
       : "This code has expired — tap New code.";
     if(left <= 0){
       clearInterval(S.duo.expiryT);
+      /* enforce it: close the room so the old code/link stops working */
+      if(!S.duo.active){ try{ S.duo.peer && S.duo.peer.destroy(); }catch(e){} S.duo.peer = null; }
       $("#duoHostStatus").textContent = "Expired. Tap New code for a fresh one.";
     }
   };
@@ -1039,12 +1082,15 @@ function startExpiryClock(){
 }
 
 /* ─── joining ─────────────────────────────────────────────── */
-function duoJoin(raw){
+async function duoJoin(raw){
   const code = codeFromText(raw);
-  if(code.length < 4){ $("#duoJoinStatus").textContent = "Paste the code or the link first."; return; }
-  const keepView = S.duoView;
+  if(code.length !== CONFIG.codeLength){
+    $("#duoJoinStatus").textContent = `That code should be ${CONFIG.codeLength} characters — paste the code or the whole link.`;
+    return;
+  }
   teardownDuo();
-  showDuoView(keepView === "join" ? "join" : "join");
+  const seq = ++duoSeq;
+  showDuoView("join");
   $("#duoCodeIn").value = code;
   $("#duoJoinStatus").textContent = "Connecting…";
   ensureStream().catch(() => {});
@@ -1053,7 +1099,11 @@ function duoJoin(raw){
   S.duo.code = code;
   S.duo.hostId = CONFIG.duoPeerPrefix + code.toLowerCase();
 
-  const peer = new Peer({ config: { iceServers: CONFIG.duoIceServers, iceCandidatePoolSize: 4 } });
+  const servers = await ICE.get();
+  if(seq !== duoSeq) return;
+  checkPath(servers, seq);
+
+  const peer = makePeer(null, servers);
   S.duo.peer = peer;
   wirePeer(peer);
 
@@ -1073,7 +1123,10 @@ function duoJoin(raw){
 /* ─── peer plumbing (both roles) ──────────────────────────── */
 function wirePeer(peer){
   peer.on("connection", conn => {
-    if(S.duo.conn && S.duo.conn.open){ try{ conn.close(); }catch(e){} return; }
+    /* one guest per room, decided at the first knock — checking .open
+       let two people slip in during the same half-second */
+    const expired = S.duo.role === "host" && S.duo.expiry && Date.now() > S.duo.expiry && !S.duo.active;
+    if(S.duo.conn || expired){ try{ conn.close(); }catch(e){} return; }
     S.duo.conn = conn;
     wireDuoData(conn);
   });
@@ -1121,6 +1174,7 @@ function wireDuoData(conn){
 
     if(S.duo.role === "host") sendDuo({ type: "config", frame: S.frame, look: S.look, timer: S.timer });
 
+    keepAwake();
     try{ await ensureStream(); }catch(e){}
     beginMedia();
     startMediaWatchdog();
@@ -1141,22 +1195,42 @@ function sendDuo(msg){
   try{ if(S.duo.conn && S.duo.conn.open) S.duo.conn.send(msg); }catch(e){}
 }
 
+const ALLOWED_MSG = new Set(["config", "shoot", "ready", "recall", "step", "chat", "bye"]);
+
 function handleDuoData(msg){
-  if(!msg || !msg.type) return;
+  /* The other end is a stranger's browser. Treat every field as hostile:
+     known types only, values checked against what we actually offer. */
+  if(!msg || typeof msg !== "object" || typeof msg.type !== "string" || !ALLOWED_MSG.has(msg.type)) return;
+
   if(msg.type === "config"){
-    S.frame = msg.frame; S.look = msg.look; S.timer = msg.timer;
+    if(S.duo.role !== "guest") return;                       // only the host sets the look
+    const has = (o, k) => typeof k === "string" && k.length < 60 && Object.prototype.hasOwnProperty.call(o, k);
+    if(!has(LOOKS, msg.look)) return;
+    if(![0, 3, 5, 10].includes(msg.timer)) return;
+    if(typeof msg.frame !== "string") return;
+    /* the host may use a custom strip we don't have — fall back like before */
+    S.frame = has(FRAMES(), msg.frame) ? msg.frame : "strip4";
+    S.look = msg.look; S.timer = msg.timer;
     buildChips($("#looks2"), LOOKS, "look"); buildChips($("#looks3"), LOOKS, "look");
     buildTimers(); prepShots();
     buildLayouts($("#layouts"), false, layoutFilter());
   }
   if(msg.type === "shoot") runSequence(true);
   if(msg.type === "ready" && S.duo.role === "guest") placeCall();
-  if(msg.type === "recall") placeCall();
+  if(msg.type === "recall" && S.duo.role === "guest") placeCall();
   if(msg.type === "step" && S.duo.role === "guest"){
+    if(!Number.isInteger(msg.n) || msg.n < 1 || msg.n > 4) return;
     if($("#duoModal").classList.contains("on")){ closeDuoModal(); markCardSelected("duo"); }
     goSilent(msg.n);
   }
-  if(msg.type === "chat") pushChat("them", msg.text);
+  if(msg.type === "chat"){
+    if(typeof msg.text !== "string") return;
+    const now = Date.now();
+    S.duo.chatTimes = S.duo.chatTimes.filter(t => now - t < CONFIG.chatBurstMs);
+    if(S.duo.chatTimes.length >= CONFIG.chatBurst) return;   // flood guard
+    S.duo.chatTimes.push(now);
+    pushChat("them", msg.text);
+  }
   if(msg.type === "bye"){ toast("Your partner left", "bad"); teardownDuo(); applyDuoStep3UI(); }
 }
 
@@ -1183,7 +1257,14 @@ function placeCall(){
   try{ S.duo.call && S.duo.call.close(); }catch(e){}
   S.duo.call = null;
   S.duo.attempts++;
-  duoNet(S.duo.attempts > 1 ? `Connecting video… (try ${S.duo.attempts})` : "Connecting video…");
+  /* Direct path failed twice? Stop trying to be clever and go through
+     the relay only. Slower, but it is the option that always works. */
+  if(S.duo.attempts > CONFIG.relayAfterAttempts && !S.duo.relay){
+    S.duo.relay = ICE.setRelayOnly(S.duo.peer, true);
+    if(S.duo.relay) console.log("[duo] switching to relay-only");
+  }
+  duoNet(S.duo.relay ? `Connecting video through the relay… (try ${S.duo.attempts})`
+       : S.duo.attempts > 1 ? `Connecting video… (try ${S.duo.attempts})` : "Connecting video…");
   try{ wireCall(S.duo.peer.call(S.duo.hostId, stream)); }
   catch(e){ console.error("[duo call]", e); }
 }
@@ -1213,10 +1294,21 @@ function wireCall(call){
     const st = pc.iceConnectionState;
     if(st === "checking")  duoNet("Finding a path between you…");
     if(st === "connected" || st === "completed"){
+      clearTimeout(S.duo.discT);
       duoNet("Video connected", "good");
-      reportPath(pc);
+      reportPath(pc).then(type => {
+        const relayed = type === "relay" || S.duo.relay;
+        ICE.capBitrate(pc, relayed ? CONFIG.bitrateRelayKbps : CONFIG.bitrateDirectKbps);
+      });
     }
-    if(st === "disconnected") duoNet("Video dropped — trying to recover…", "bad");
+    if(st === "disconnected"){
+      duoNet("Video dropped — trying to recover…", "bad");
+      /* brief blips heal on their own; a real drop gets re-dialled */
+      clearTimeout(S.duo.discT);
+      S.duo.discT = setTimeout(() => {
+        if(S.duo.call === call && pc.iceConnectionState !== "connected" && pc.iceConnectionState !== "completed") retryMedia();
+      }, 4000);
+    }
     if(st === "failed"){
       duoNet("Direct path failed — retrying through the relay…", "bad");
       retryMedia();
@@ -1232,8 +1324,9 @@ async function reportPath(pc){
     let pair = null, local = null;
     stats.forEach(r => { if(r.type === "candidate-pair" && r.state === "succeeded" && r.nominated !== false) pair = r; });
     if(pair) stats.forEach(r => { if(r.id === pair.localCandidateId) local = r; });
-    if(local) console.log("[duo] video path:", local.candidateType, local.protocol || "");
+    if(local){ console.log("[duo] video path:", local.candidateType, local.protocol || ""); return local.candidateType; }
   }catch(e){}
+  return null;
 }
 
 function attachRemote(remote){
@@ -1260,8 +1353,7 @@ function startMediaWatchdog(){
   clearInterval(S.duo.watchT);
   S.duo.watchT = setInterval(() => {
     if(!S.duo.active){ clearInterval(S.duo.watchT); return; }
-    const live = S.duo.remoteStream && S.duo.remoteStream.getVideoTracks().some(t => t.readyState === "live");
-    if(live) return;
+    if(videoLive()) return;
     if(!stream){ ensureStream().catch(() => {}); return; }
     if(S.duo.attempts >= CONFIG.maxVideoRetries){
       duoNet("Still no video. Tap Retry video, or try mobile data instead of Wi-Fi.", "bad");
@@ -1270,6 +1362,43 @@ function startMediaWatchdog(){
     retryMedia();
   }, CONFIG.videoRetryEvery);
 }
+function videoLive(){
+  const r = S.duo.remoteStream;
+  return !!(r && r.getVideoTracks().some(t => t.readyState === "live"));
+}
+
+/* Phones roam between Wi-Fi and mobile data, lock their screens and
+   switch tabs. Any of those can silently kill a call — so when the
+   device comes back, check and heal instead of waiting for the timer. */
+function healIfNeeded(){
+  if(!S.duo.peer) return;
+  try{ if(S.duo.peer.disconnected) S.duo.peer.reconnect(); }catch(e){}
+  if(S.duo.active && !videoLive()){
+    S.duo.attempts = Math.min(S.duo.attempts, CONFIG.maxVideoRetries - 1);
+    setTimeout(retryMedia, 1200);
+  }
+}
+window.addEventListener("online", healIfNeeded);
+window.addEventListener("offline", () => { if(S.duo.active) duoNet("You're offline — will reconnect when you're back.", "bad"); });
+document.addEventListener("visibilitychange", () => {
+  if(document.visibilityState !== "visible") return;
+  if(S.duo.active) keepAwake();
+  healIfNeeded();
+});
+
+/* A sleeping screen is a black screen. Ask the OS to keep it on. */
+async function keepAwake(){
+  try{
+    if(!("wakeLock" in navigator) || S.duo.wake) return;
+    S.duo.wake = await navigator.wakeLock.request("screen");
+    S.duo.wake.addEventListener("release", () => { S.duo.wake = null; });
+  }catch(e){}
+}
+function letSleep(){
+  try{ S.duo.wake && S.duo.wake.release(); }catch(e){}
+  S.duo.wake = null;
+}
+
 function retryMedia(){
   if(!S.duo.active) return;
   if(S.duo.role === "guest") placeCall();
@@ -1335,7 +1464,10 @@ $$("[data-quick]").forEach(b => b.onclick = () => {
 
 /* ─── teardown ────────────────────────────────────────────── */
 function teardownDuo(){
+  duoSeq++;                       // cancels any host/join still waiting on the network
   clearTimeout(S.duo.openT);
+  clearTimeout(S.duo.discT);
+  letSleep();
   clearInterval(S.duo.expiryT);
   clearInterval(S.duo.watchT);
   if(S.duo.active) sendDuo({ type: "bye" });
@@ -1448,8 +1580,21 @@ $("#adminClose").onclick = () => $("#adminModal").classList.remove("on");
 $("#adminModal").addEventListener("click", e => { if(e.target.id === "adminModal") $("#adminModal").classList.remove("on"); });
 $("#designBtn").onclick = () => openAdmin(true);
 
-$("#adminGo").onclick = () => {
-  if($("#adminPass").value !== CONFIG.adminPass){ toast("Wrong passcode", "bad"); return; }
+$("#adminGo").onclick = async () => {
+  const btn = $("#adminGo");
+  btn.disabled = true;
+  try{
+    const res = await fetch("/api/admin", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pass: $("#adminPass").value })
+    });
+    if(res.status === 501){ toast("Set ADMIN_PASS in your Vercel environment variables first", "bad"); return; }
+    if(res.status === 429){ toast("Too many tries — wait a few minutes", "bad"); return; }
+    if(!res.ok){ toast("Wrong passcode", "bad"); return; }
+  }catch(e){ toast("Couldn't check the passcode — are you online?", "bad"); return; }
+  finally{ btn.disabled = false; }
+  $("#adminPass").value = "";
   $("#adminLock").hidden = true; $("#adminBody").hidden = false;
   buildLayouts($("#adminList"), true); drawFormPreview();
 };
@@ -1548,6 +1693,8 @@ $("#fImport").addEventListener("change", e => {
 /* ─── boot ────────────────────────────────────────────────── */
 (async function init(){
   $("#brandName").textContent = CONFIG.name;
+  ICE.setFallback(CONFIG.duoIceServers);
+  ICE.prefetch();          // credentials are usually ready before anyone taps Duo Booth
   loadTheme();
   loadCustom();
   loadPapers();
