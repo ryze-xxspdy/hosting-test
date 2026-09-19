@@ -579,19 +579,32 @@ hr{border:0;border-top:1px solid var(--line);margin:22px 0}
 
 <!-- ══════════ DUO CONNECT ══════════ -->
 <div class="modal" id="duoModal">
-  <div class="sheet" style="max-width:460px">
+  <div class="sheet" style="max-width:520px">
     <div style="display:flex;align-items:start;gap:14px">
-      <div style="flex:1"><h2>Duo Booth</h2><p class="sub" id="duoSub">Connect your camera with someone else's, live, using a one-time code.</p></div>
+      <div style="flex:1"><h2>Duo Booth</h2><p class="sub" id="duoSub">Connect your camera with someone else's, live.</p></div>
       <button class="iconbtn" id="duoClose" aria-label="Close">✕</button>
     </div>
 
+    <!-- Camera preview in modal -->
+    <video id="duoModalCam" style="width:100%;border-radius:var(--r-md);margin-top:16px;display:none;max-height:240px;object-fit:cover;background:var(--card)" playsinline muted autoplay></video>
+
+    <!-- Choice: Code or Link -->
     <div id="duoChoice" style="margin-top:18px">
-      <button class="btn primary wide" id="duoHostBtn">Host a session</button>
-      <p class="hint">You'll get a code to share with your partner.</p>
-      <button class="btn ghost wide" id="duoJoinBtn" style="margin-top:16px">Join a session</button>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:12px">Select connection method:</p>
+      <button class="btn primary wide" id="duoHostBtn">Code: Host a session</button>
+      <p class="hint">Generate a 6-character code to share with your partner.</p>
+      <button class="btn ghost wide" id="duoJoinBtn" style="margin-top:14px">Code: Join a session</button>
       <p class="hint">Enter the code someone shared with you.</p>
+      
+      <div style="margin-top:18px;padding-top:18px;border-top:1px solid var(--line)">
+        <button class="btn primary wide" id="duoLinkHostBtn">Link: Generate a 5-minute link</button>
+        <p class="hint">Create a shareable link that expires in 5 minutes.</p>
+        <button class="btn ghost wide" id="duoLinkJoinBtn" style="margin-top:14px">Link: Join with a link</button>
+        <p class="hint">Paste the link or token someone shared.</p>
+      </div>
     </div>
 
+    <!-- Code-based: Host -->
     <div id="duoHostView" hidden style="margin-top:8px">
       <span class="label">Your code</span>
       <div class="duoCode" id="duoCodeOut">••••••</div>
@@ -599,12 +612,30 @@ hr{border:0;border-top:1px solid var(--line);margin:22px 0}
       <p class="hint" id="duoHostStatus">Generating your code…</p>
     </div>
 
+    <!-- Code-based: Join -->
     <div id="duoJoinView" hidden style="margin-top:8px">
       <div class="field"><span class="label">Partner's code</span><input type="text" id="duoCodeIn" placeholder="e.g. PZK4QD" maxlength="10" autocapitalize="characters" autocomplete="off"></div>
       <button class="btn primary wide" id="duoConnectBtn" style="margin-top:14px">Connect</button>
       <p class="hint" id="duoJoinStatus"></p>
     </div>
 
+    <!-- Link-based: Host -->
+    <div id="duoLinkHostView" hidden style="margin-top:8px">
+      <span class="label">Your link</span>
+      <div style="background:var(--card-2);padding:12px;border-radius:var(--r-md);font-family:monospace;font-size:12px;word-break:break-all;margin-top:8px">Share this link or token with your partner 👇</div>
+      <button class="btn ghost wide" id="duoLinkCopyBtn" style="margin-top:12px">Copy link</button>
+      <p class="hint" id="duoLinkExpiry"></p>
+      <p class="hint" id="duoLinkHostStatus">Generating link…</p>
+    </div>
+
+    <!-- Link-based: Join -->
+    <div id="duoLinkJoinView" hidden style="margin-top:8px">
+      <div class="field"><span class="label">Paste link or token</span><input type="text" id="duoLinkInput" placeholder="Paste the shared link" autocomplete="off"></div>
+      <button class="btn primary wide" id="duoLinkConnectBtn" style="margin-top:14px">Connect</button>
+      <p class="hint" id="duoLinkJoinStatus"></p>
+    </div>
+
+    <!-- Connected -->
     <div id="duoConnectedView" hidden style="margin-top:8px">
       <p class="hint" style="color:var(--good);font-size:14.5px">✓ Connected — you're both in the room.</p>
       <button class="btn primary wide" id="duoContinueBtn" style="margin-top:10px">Continue</button>

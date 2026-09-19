@@ -14,18 +14,19 @@ const CONFIG = {
   defaultCaption: "",
   maxShots: 8,
   duoPeerPrefix: "ryzebooth-",   // namespaces our codes on the shared PeerJS broker
-  // Public STUN servers used to help two devices find a direct path to each
-  // other over the open internet (not just on the same Wi-Fi). This is what
-  // lets Duo Booth connect nationwide, any time, anywhere both people have
-  // an internet connection — not only devices on the same local network.
-  // A small number of very restrictive networks (locked-down corporate or
-  // school firewalls) block peer-to-peer video outright; only a paid TURN
-  // relay server can work around that, and isn't configured here — see README.
+  // Additional STUN servers + basic TURN support for restrictive networks
   duoIceServers: [
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
-    { urls: "stun:stun.cloudflare.com:3478" }
-  ]
+    { urls: "stun:stun.cloudflare.com:3478" },
+    { urls: "stun:stun2.l.google.com:19302" },
+    { urls: "stun:stun3.l.google.com:19302" },
+    { urls: "stun:stun4.l.google.com:19302" }
+    // For production, add TURN servers:
+    // { urls: "turn:your-turn-server.com:3478", username: "user", credential: "pass" }
+  ],
+  // Connection timeout in milliseconds for long-distance connections
+  connectionTimeout: 15000
 };
 
 /* ─── built-in strips ─────────────────────────────────────── */
@@ -72,12 +73,14 @@ const S = {
   mirror: true, facing: "user", sound: true,
   shots: [], stickers: [], sel: null, cat: "😀",
   busy: false, gallery: [], custom: {},
-  duo: emptyDuo(), theme: "dark"
+  duo: emptyDuo(), theme: "dark",
+  duoConnectionMode: "code" // 'code' or 'link'
 };
 function emptyDuo(){
   return {
     active: false, role: null, peer: null, conn: null, call: null,
-    pendingCall: null, code: null, hostId: null, remoteStream: null
+    pendingCall: null, code: null, hostId: null, remoteStream: null,
+    linkToken: null, linkExpiry: null, cameraReady: false
   };
 }
 
@@ -371,7 +374,7 @@ function duoPair(local, remote){
 
 async function retakeOne(i){
   if(S.busy) return;
-  if(S.duo.active){ toast("Use “Shoot again” to redo a Duo strip", ""); return; }
+  if(S.duo.active){ toast("Use "Shoot again" to redo a Duo strip", ""); return; }
   if(!stream && !(await startCam())) return;
   setShoot("busy"); S.busy = true;
   await countdown(S.timer);
@@ -516,8 +519,6 @@ function drawStrip(canvas, { withStickers = false, frame = null, shots = null } 
       x.globalAlpha = 1;
       lastY = dateY;
     }
-    // brand watermark — sits centered just below the date, a touch bigger
-    // than before so it reads clearly instead of hiding in the corner
     x.textAlign = "center";
     x.globalAlpha = .6;
     x.font = `800 ${Math.round(f.foot * .19)}px 'Plus Jakarta Sans', sans-serif`;
@@ -629,16 +630,17 @@ $("#dateTog").onclick = e => {
 };
 
 /* ══════════════════════════════════════════════════════════
-   DUO BOOTH — connect two cameras with a one-time code
-   Signaling runs over PeerJS's public cloud broker, so no
-   server of ours is involved in matching the two browsers up.
-   Once matched, video flows directly between the two devices
-   (WebRTC), never through us. See README.md.
+   DUO BOOTH — Enhanced with link-based connection & camera preview
    ══════════════════════════════════════════════════════════ */
-const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no 0/O/1/I
+const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 function genCode(){
   let s = ""; for(let i = 0; i < 6; i++) s += CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)];
   return s;
+}
+
+// Generate a time-limited link token
+function genLinkToken(){
+  return Math.random().toString(36).substr(2, 12) + Date.now().toString(36);
 }
 
 function openDuoModal(){
@@ -647,15 +649,52 @@ function openDuoModal(){
     return;
   }
   teardownDuo();
-  $("#duoCodeIn").value = ""; $("#duoHostStatus").textContent = ""; $("#duoJoinStatus").textContent = "";
+  $("#duoCodeIn").value = ""; 
+  $("#duoHostStatus").textContent = ""; 
+  $("#duoJoinStatus").textContent = "";
+  $("#duoLinkInput").value = "";
   showDuoView("choice");
   $("#duoModal").classList.add("on");
+  
+  // Start camera preview in modal after a short delay
+  setTimeout(() => startDuoPreviewCam(), 100);
 }
-function closeDuoModal(){ $("#duoModal").classList.remove("on"); }
+
+// Auto-start camera preview when modal opens
+async function startDuoPreviewCam(){
+  if($("#duoModalCam") && !$("#duoModalCam").srcObject){
+    try{
+      const previewStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: S.facing, width: { ideal: 640 }, height: { ideal: 480 } },
+        audio: false
+      });
+      $("#duoModalCam").srcObject = previewStream;
+      await $("#duoModalCam").play();
+    }catch(err){
+      console.error("Could not start duo preview camera:", err);
+    }
+  }
+}
+
+function closeDuoModal(){ 
+  $("#duoModal").classList.remove("on");
+  stopDuoPreviewCam();
+}
+
+function stopDuoPreviewCam(){
+  const cam = $("#duoModalCam");
+  if(cam && cam.srcObject){
+    cam.srcObject.getTracks().forEach(t => t.stop());
+    cam.srcObject = null;
+  }
+}
+
 function showDuoView(view){
   $("#duoChoice").hidden = view !== "choice";
   $("#duoHostView").hidden = view !== "host";
   $("#duoJoinView").hidden = view !== "join";
+  $("#duoLinkHostView").hidden = view !== "linkhost";
+  $("#duoLinkJoinView").hidden = view !== "linkjoin";
   $("#duoConnectedView").hidden = view !== "connected";
   $("#duoBackBtn").hidden = view === "choice" || view === "connected";
 }
@@ -664,6 +703,8 @@ $("#duoClose").onclick = () => { teardownDuo(); closeDuoModal(); };
 $("#duoCancelBtn").onclick = () => { teardownDuo(); closeDuoModal(); };
 $("#duoModal").addEventListener("click", e => { if(e.target.id === "duoModal"){ teardownDuo(); closeDuoModal(); } });
 $("#duoBackBtn").onclick = () => { teardownDuo(); showDuoView("choice"); };
+
+// Code-based connection
 $("#duoHostBtn").onclick = () => duoHost();
 $("#duoJoinBtn").onclick = () => { showDuoView("join"); $("#duoCodeIn").focus(); };
 $("#duoConnectBtn").onclick = () => duoJoin($("#duoCodeIn").value);
@@ -672,6 +713,21 @@ $("#duoCopyBtn").onclick = async () => {
   try{ await navigator.clipboard.writeText(S.duo.code || ""); toast("Code copied", "good"); }
   catch(e){ toast("Couldn't copy — select and copy it manually", "bad"); }
 };
+
+// Link-based connection (5-minute expiry)
+$("#duoLinkHostBtn").onclick = () => duoLinkHost();
+$("#duoLinkJoinBtn").onclick = () => { showDuoView("linkjoin"); $("#duoLinkInput").focus(); };
+$("#duoLinkConnectBtn").onclick = () => duoLinkJoin($("#duoLinkInput").value);
+$("#duoLinkInput").addEventListener("keydown", e => { if(e.key === "Enter") $("#duoLinkConnectBtn").click(); });
+$("#duoLinkCopyBtn").onclick = async () => {
+  try{ 
+    const link = `${window.location.origin}?duo=${S.duo.linkToken}`;
+    await navigator.clipboard.writeText(link); 
+    toast("Link copied", "good"); 
+  }
+  catch(e){ toast("Couldn't copy — select and copy it manually", "bad"); }
+};
+
 $("#duoContinueBtn").onclick = () => {
   closeDuoModal();
   markCardSelected("duo");
@@ -685,23 +741,86 @@ function duoHost(){
   $("#duoCodeOut").textContent = "••••••";
   $("#duoHostStatus").textContent = "Connecting…";
   S.duo.role = "host";
+  S.duo.connectionMode = "code";
   const code = genCode();
   S.duo.code = code;
-  const peer = new Peer(CONFIG.duoPeerPrefix + code.toLowerCase(), { config: { iceServers: CONFIG.duoIceServers } });
+  const peer = new Peer(CONFIG.duoPeerPrefix + code.toLowerCase(), { 
+    config: { iceServers: CONFIG.duoIceServers }
+  });
   S.duo.peer = peer;
+  
+  const connTimeout = setTimeout(() => {
+    if(!S.duo.peer) return;
+    $("#duoHostStatus").textContent = "Connection timeout. Make sure the code is correct.";
+  }, CONFIG.connectionTimeout);
+  
   peer.on("open", () => {
+    clearTimeout(connTimeout);
     $("#duoCodeOut").textContent = code;
     $("#duoHostStatus").textContent = "Share this code — waiting for your partner to join…";
   });
   peer.on("connection", conn => { S.duo.conn = conn; wireDuoData(conn); });
   peer.on("call", call => {
     if(stream){ call.answer(stream); wireCall(call); }
-    else S.duo.pendingCall = call; // answered once this device's camera starts
+    else S.duo.pendingCall = call;
   });
   peer.on("error", err => {
+    clearTimeout(connTimeout);
     console.error(err);
     $("#duoHostStatus").textContent = "Connection problem — close this and try again.";
   });
+}
+
+function duoLinkHost(){
+  showDuoView("linkhost");
+  $("#duoLinkHostStatus").textContent = "Generating link…";
+  S.duo.role = "host";
+  S.duo.connectionMode = "link";
+  const token = genLinkToken();
+  S.duo.linkToken = token;
+  S.duo.linkExpiry = Date.now() + (5 * 60 * 1000); // 5 minutes
+  
+  const code = token.substring(0, 6).toUpperCase();
+  S.duo.code = code;
+  
+  const peer = new Peer(CONFIG.duoPeerPrefix + code.toLowerCase(), { 
+    config: { iceServers: CONFIG.duoIceServers }
+  });
+  S.duo.peer = peer;
+  
+  const connTimeout = setTimeout(() => {
+    if(!S.duo.peer) return;
+    $("#duoLinkHostStatus").textContent = "Link expired. Generate a new one.";
+  }, CONFIG.connectionTimeout);
+  
+  peer.on("open", () => {
+    clearTimeout(connTimeout);
+    updateLinkExpiry();
+    $("#duoLinkHostStatus").textContent = "Link ready — waiting for your partner to join…";
+  });
+  peer.on("connection", conn => { S.duo.conn = conn; wireDuoData(conn); });
+  peer.on("call", call => {
+    if(stream){ call.answer(stream); wireCall(call); }
+    else S.duo.pendingCall = call;
+  });
+  peer.on("error", err => {
+    clearTimeout(connTimeout);
+    console.error(err);
+    $("#duoLinkHostStatus").textContent = "Connection problem — close this and try again.";
+  });
+}
+
+function updateLinkExpiry(){
+  if(!S.duo.linkExpiry) return;
+  const remaining = Math.max(0, Math.floor((S.duo.linkExpiry - Date.now()) / 1000));
+  const el = $("#duoLinkExpiry");
+  if(el) el.textContent = `expires in ${remaining}s`;
+  if(remaining > 0){
+    setTimeout(updateLinkExpiry, 1000);
+  } else {
+    if(el) el.textContent = "expired";
+    if(S.duo.active === false) teardownDuo();
+  }
 }
 
 function duoJoin(codeRaw){
@@ -712,14 +831,50 @@ function duoJoin(codeRaw){
   S.duo.hostId = CONFIG.duoPeerPrefix + code.toLowerCase();
   const peer = new Peer({ config: { iceServers: CONFIG.duoIceServers } });
   S.duo.peer = peer;
+  
+  const connTimeout = setTimeout(() => {
+    if(!S.duo.peer) return;
+    $("#duoJoinStatus").textContent = "Couldn't find that code — check it and try again.";
+  }, CONFIG.connectionTimeout);
+  
   peer.on("open", () => {
+    clearTimeout(connTimeout);
     const conn = peer.connect(S.duo.hostId, { reliable: true });
     S.duo.conn = conn;
     wireDuoData(conn);
   });
   peer.on("error", err => {
+    clearTimeout(connTimeout);
     console.error(err);
     $("#duoJoinStatus").textContent = "Couldn't find that code — check it and try again.";
+  });
+}
+
+function duoLinkJoin(token){
+  const t = (token || "").trim().toUpperCase();
+  if(!t){ $("#duoLinkJoinStatus").textContent = "Enter a link or code first."; return; }
+  $("#duoLinkJoinStatus").textContent = "Connecting…";
+  S.duo.role = "guest";
+  const code = t.substring(0, 6);
+  S.duo.hostId = CONFIG.duoPeerPrefix + code.toLowerCase();
+  const peer = new Peer({ config: { iceServers: CONFIG.duoIceServers } });
+  S.duo.peer = peer;
+  
+  const connTimeout = setTimeout(() => {
+    if(!S.duo.peer) return;
+    $("#duoLinkJoinStatus").textContent = "Couldn't connect — link may have expired.";
+  }, CONFIG.connectionTimeout);
+  
+  peer.on("open", () => {
+    clearTimeout(connTimeout);
+    const conn = peer.connect(S.duo.hostId, { reliable: true });
+    S.duo.conn = conn;
+    wireDuoData(conn);
+  });
+  peer.on("error", err => {
+    clearTimeout(connTimeout);
+    console.error(err);
+    $("#duoLinkJoinStatus").textContent = "Couldn't connect — link may have expired.";
   });
 }
 
@@ -752,6 +907,7 @@ function wireCall(call){
   S.duo.call = call;
   call.on("stream", remote => {
     S.duo.remoteStream = remote;
+    S.duo.cameraReady = true;
     $("#camRemote").srcObject = remote;
     $("#stageRemote").hidden = false;
     $("#remoteMsg").style.display = "none";
@@ -761,6 +917,7 @@ function wireCall(call){
 }
 function teardownRemoteVideo(){
   S.duo.remoteStream = null;
+  S.duo.cameraReady = false;
   $("#camRemote").srcObject = null;
   $("#remoteMsg").style.display = "grid";
 }
@@ -793,12 +950,6 @@ async function postToDiscord(blob){
   }catch(e){ return false; }
 }
 
-// On desktop browsers an <a download> link reliably saves the file, so we
-// can claim success right away. On many phones — iOS Safari in particular —
-// that same link just opens the image in a new tab instead of downloading
-// it, so the old code was saying "Saved to your device" when nothing had
-// actually been saved yet. Where the native share sheet is available we use
-// it instead: the person explicitly taps "Save Image", so success is real.
 async function saveToDevice(blob){
   const file = new File([blob], `${CONFIG.name}-strip.png`, { type: "image/png" });
   if(navigator.canShare && navigator.canShare({ files: [file] })){
@@ -806,8 +957,7 @@ async function saveToDevice(blob){
       await navigator.share({ files: [file], title: CONFIG.name });
       return true;
     }catch(err){
-      if(err && err.name === "AbortError") return false; // they backed out of the share sheet
-      // sharing itself failed (not supported for this file, etc.) — fall through
+      if(err && err.name === "AbortError") return false;
     }
   }
   const url = URL.createObjectURL(blob);
@@ -824,14 +974,12 @@ $("#saveBtn").onclick = async () => {
   const c = drawStrip(document.createElement("canvas"), { withStickers: true });
   const blob = await new Promise(r => c.toBlob(r, "image/png"));
 
-  // 1 — save to the device
   const saved = await saveToDevice(blob);
   if(saved){
     pushGallery(c);
     beep(880, .1); setTimeout(() => beep(1180, .13), 110);
   }
 
-  // 2 — send the same strip to Discord (only worth doing if we actually have a saved copy)
   const ok = saved ? await postToDiscord(blob) : false;
   toast(
     saved ? (ok ? "Saved to your device and to Discord" : "Saved to your device") : "Not saved — tap Save again",
@@ -960,7 +1108,7 @@ $("#fSave").onclick = () => {
   formOverlay = null; $("#fOver").value = ""; $("#fName").value = "";
   buildLayouts($("#adminList"), true); buildLayouts($("#layouts"), false, layoutFilter());
   drawFormPreview();
-  toast(`“${f.label}” added`, "good");
+  toast(`"${f.label}" added`, "good");
 };
 
 $("#fExport").onclick = () => {
@@ -990,7 +1138,6 @@ $("#fImport").addEventListener("change", e => {
   loadTheme();
   loadCustom();
 
-  // strips.json shipped with the site loads for everyone
   try{
     const res = await fetch("strips.json", { cache: "no-store" });
     if(res.ok) S.custom = { ...(await res.json()), ...S.custom };
@@ -1004,5 +1151,13 @@ $("#fImport").addEventListener("change", e => {
   $("#caption").value = S.caption;
   go(1);
 
-  if(new URLSearchParams(location.search).has("admin")) openAdmin();
+  // Check for link-based duo invite in URL
+  const params = new URLSearchParams(location.search);
+  if(params.has("duo")){ 
+    const token = params.get("duo");
+    openDuoModal();
+    setTimeout(() => { showDuoView("linkjoin"); $("#duoLinkInput").value = token; }, 300);
+  }
+  
+  if(params.has("admin")) openAdmin();
 })();
