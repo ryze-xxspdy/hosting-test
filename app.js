@@ -12,6 +12,7 @@ const CONFIG = {
   discordEndpoint: "/api/discord",  // Vercel function; leave as is
   photosEndpoint:  "/api/photos",   // photo database (admin gallery)  — api/photos.mjs
   configEndpoint:  "/api/config",   // booth-wide settings (removed paper colours) — api/config.mjs
+  discordInviteUrl: "",             // e.g. "https://discord.gg/yourcode" — shown as an icon in the top bar
   defaultCaption: "",
 
   /* Duo Booth is developer-only: tap the logo (or the locked Duo card) 5×,
@@ -417,6 +418,19 @@ $("#soundBtn").onclick = e => {
   S.sound = !S.sound;
   e.currentTarget.classList.toggle("on", S.sound);
   if(S.sound) beep(900, .07);
+};
+
+/* Discord icon in the top bar — a plain invite link, nothing more.
+   Left blank until CONFIG.discordInviteUrl is set, so it can't 404. */
+$("#discordLink").onclick = e => {
+  if(!CONFIG.discordInviteUrl){
+    e.preventDefault();
+    toast("Add your server's invite link to CONFIG.discordInviteUrl in app.js", "bad");
+    return;
+  }
+  $("#discordLink").target = "_blank";
+  $("#discordLink").rel = "noopener";
+  $("#discordLink").href = CONFIG.discordInviteUrl;
 };
 
 /* ─── light / dark theme ──────────────────────────────────── */
