@@ -1,35 +1,77 @@
-/* POST /api/admin  { "pass": "..." }  →  { ok: true }
+/* Relays a finished strip to Discord.
+   The webhook URL lives in the DISCORD_WEBHOOK environment variable on
+   Vercel, so it is never visible in the page source.
 
-   The strip-manager passcode is checked here instead of in app.js, where
-   anyone could read it with View Source. Set ADMIN_PASS in Vercel.
+   Hardening added: same-origin only, per-IP rate limit, size check before
+   the body is parsed, and a real PNG signature check (the browser-supplied
+   file type alone can be faked). */
 
-   Be aware of what this protects: the strip manager only edits layouts
-   stored in the visitor's own browser, so this is a courtesy gate, not
-   a vault. */
-
-import { json, sameOrigin, clientIp, rateLimited, safeEqual } from "./_guard.js";
+import { json, sameOrigin, clientIp, rateLimited } from "./_guard.js";
 
 export const config = { runtime: "edge" };
 
+const BOT_NAME = "ryze 📸";
+const MESSAGE  = "Fresh from the booth ✨";
+const MAX_BYTES = 8 * 1024 * 1024;
+const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
 export default async function handler(req) {
-  if (req.method !== "POST") return json({ ok: false, error: "Use POST" }, 405);
-  if (!sameOrigin(req))      return json({ ok: false, error: "Forbidden" }, 403);
-
-  const secret = process.env.ADMIN_PASS;
-  if (!secret) return json({ ok: false, error: "ADMIN_PASS is not set on the server" }, 501);
-
-  if (rateLimited("admin:" + clientIp(req), 6, 10 * 60_000))
-    return json({ ok: false, error: "Too many tries. Wait a few minutes." }, 429, { "retry-after": "600" });
-
-  let pass = "";
-  try {
-    const body = await req.json();
-    pass = typeof body.pass === "string" ? body.pass.slice(0, 200) : "";
-  } catch {
-    return json({ ok: false, error: "Bad request" }, 400);
+  if (req.method !== "POST") {
+    return json({ ok: false, error: "Use POST" }, 405);
+  }
+  if (!sameOrigin(req)) {
+    return json({ ok: false, error: "Forbidden" }, 403);
+  }
+  if (rateLimited("discord:" + clientIp(req), 8, 60_000)) {
+    return json({ ok: false, error: "Too many uploads — wait a minute" }, 429, { "retry-after": "60" });
   }
 
-  const ok = await safeEqual(pass, secret);
-  await new Promise(r => setTimeout(r, 350));     // blunt guessing speed
-  return ok ? json({ ok: true }) : json({ ok: false, error: "Wrong passcode" }, 401);
+  const hook = process.env.DISCORD_WEBHOOK;
+  if (!hook) {
+    // No webhook configured — the booth still works, nothing is sent.
+    return json({ ok: false, error: "No webhook configured" }, 501);
+  }
+
+  const declared = Number(req.headers.get("content-length") || 0);
+  if (declared > MAX_BYTES + 64 * 1024) {
+    return json({ ok: false, error: "Image is too large" }, 413);
+  }
+
+  let file;
+  try {
+    const form = await req.formData();
+    file = form.get("file");
+  } catch {
+    return json({ ok: false, error: "Could not read the upload" }, 400);
+  }
+
+  if (!file || typeof file === "string") {
+    return json({ ok: false, error: "No image in the request" }, 400);
+  }
+  if (file.size > MAX_BYTES) {
+    return json({ ok: false, error: "Image is too large" }, 413);
+  }
+
+  const head = new Uint8Array(await file.slice(0, 8).arrayBuffer());
+  if (head.length < 8 || !PNG_MAGIC.every((b, i) => head[i] === b)) {
+    return json({ ok: false, error: "Only PNG images are accepted" }, 415);
+  }
+
+  const out = new FormData();
+  out.append("file", file, `strip-${Date.now()}.png`);
+  out.append("payload_json", JSON.stringify({
+    username: BOT_NAME,
+    content: MESSAGE,
+    allowed_mentions: { parse: [] }
+  }));
+
+  try {
+    const res = await fetch(hook, { method: "POST", body: out });
+    if (!res.ok) {
+      return json({ ok: false, error: `Discord replied ${res.status}` }, 502);
+    }
+    return json({ ok: true });
+  } catch {
+    return json({ ok: false, error: "Could not reach Discord" }, 502);
+  }
 }
