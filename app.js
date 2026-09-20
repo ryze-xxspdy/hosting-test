@@ -1783,7 +1783,26 @@ async function postToGallery(canvas){
   }catch(e){ return false; }
 }
 
+/* iOS Safari ignores the `download` attribute (it just opens the image in a
+   new tab instead of saving it), so there the share sheet's "Save Image" is
+   the only reliable way to land the strip in Photos. Everywhere else — Android,
+   desktop — a plain download link saves straight to the Downloads folder with
+   no extra tap, so that's what we do first. */
+function isIOSDevice(){
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+         (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+function downloadBlob(blob){
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = `${CONFIG.name}-strip.png`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
 async function saveToDevice(blob){
+  if(!isIOSDevice()){
+    try{ downloadBlob(blob); return true; }catch(e){ /* fall through to share below */ }
+  }
   const file = new File([blob], `${CONFIG.name}-strip.png`, { type: "image/png" });
   if(navigator.canShare && navigator.canShare({ files: [file] })){
     try{
@@ -1793,11 +1812,7 @@ async function saveToDevice(blob){
       if(err && err.name === "AbortError") return false;
     }
   }
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url; a.download = `${CONFIG.name}-strip.png`;
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 4000);
+  downloadBlob(blob);   // last-resort fallback for the rare iOS browser with no Web Share
   return true;
 }
 
@@ -1892,8 +1907,15 @@ $("#adminGo").onclick = async () => {
   $("#adminPass").value = "";
   S.adminPass = pass;                 // memory only — gone on reload
   setDev(true);
-  toast("Developer mode is on — Duo Booth is unlocked", "good");
+  toast("Developer mode is on — jumping into Duo Booth", "good");
   showAdminBody(true);
+  /* dev mode has one job most of the time: testing Duo. Don't make a developer
+     close this panel, scroll to the card and click it every single time —
+     go there directly. (Turning dev mode off, or the 5-tap logo shortcut when
+     you actually want the admin panel, both still work as before.) */
+  $("#adminModal").classList.remove("on");
+  markCardSelected("duo");
+  openDuoModal();
 };
 $("#adminPass").addEventListener("keydown", e => { if(e.key === "Enter") $("#adminGo").click(); });
 
