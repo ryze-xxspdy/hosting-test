@@ -1,48 +1,58 @@
 /* ══════════════════════════════════════════════════════════════
-   /api/config — booth-wide settings the admin controls
+   api/config.mjs — booth-wide settings
    ──────────────────────────────────────────────────────────────
-   GET  (public)  → { db, hiddenPapers }   every visitor's page reads this
-   PUT  (admin)   ← { hiddenPapers: [...] }  paper colours to remove
+   GET          → { db, hiddenPapers }               (public, no auth — every
+                                                        visitor reads this on load)
+   PUT (admin)  → { hiddenPapers } saved, echoed back  (needs x-admin-pass)
 
-   Stored as one JSON string at ryze:config. If no database is
-   connected, GET answers { db:false } and the page falls back to
-   remembering the admin's choice on that one device.
+   "hiddenPapers" is the list of built-in paper colours the admin has
+   removed from the picker for everyone. Visitors can still ADD their
+   own colours/blends — that always happens locally in their own
+   browser (see app.js addPaper / addPaperPhoto), no server needed.
+
+   Needs a database connected (see _store.mjs). Without one, GET
+   answers { db:false, hiddenPapers:[] } and PUT answers 501
+   "no-database" — the app then falls back to remembering the choice
+   on that one device only, which is exactly what the client already
+   expects (see loadConfig / paperSave in app.js).
    ══════════════════════════════════════════════════════════════ */
-import { dbReady, redis, send, adminCheck, readJson } from "./_store.mjs";
+import { redis, dbReady, sameOrigin, limited, clientIp, adminCheck, send, readJson } from "./_store.mjs";
 
-/* Only the shapes the booth actually uses: "#RRGGBB" or "grad:#A,#B,angle".
-   (Photo papers live on each visitor's device, so they never appear here.) */
-const HEX   = "#[0-9A-Fa-f]{3,8}";
-const PAPER = new RegExp(`^(${HEX}|grad:${HEX},${HEX},\\d{1,3})$`);
-
-const clean = list => Array.isArray(list)
-  ? [...new Set(list.filter(p => typeof p === "string" && p.length <= 60 && PAPER.test(p)))].slice(0, 100)
-  : [];
+const KEY = "ryzebooth:hiddenPapers";
+const MAX_ITEMS = 200;
 
 export default async function handler(req, res){
-  try{
-    if(req.method === "GET"){
-      if(!dbReady()) return send(res, 200, { db: false, hiddenPapers: [] });
-      const raw = await redis("GET", "ryze:config");
-      let cfg = {}; try{ cfg = raw ? JSON.parse(raw) : {}; }catch(e){}
-      return send(res, 200, { db: true, hiddenPapers: clean(cfg.hiddenPapers) });
+  if(req.method === "GET"){
+    if(!dbReady()) return send(res, 200, { db: false, hiddenPapers: [] });
+    try{
+      const raw = await redis("GET", KEY);
+      const hiddenPapers = raw ? JSON.parse(raw) : [];
+      return send(res, 200, { db: true, hiddenPapers: Array.isArray(hiddenPapers) ? hiddenPapers : [] });
+    }catch(e){
+      return send(res, 200, { db: false, hiddenPapers: [] });
     }
-
-    if(req.method === "PUT"){
-      const a = adminCheck(req);
-      if(!a.ok) return send(res, a.status, { error: a.error });
-      if(!dbReady()) return send(res, 501, { error: "no-database" });
-      const b = readJson(req);
-      if(!b) return send(res, 400, { error: "json" });
-      const hiddenPapers = clean(b.hiddenPapers);
-      await redis("SET", "ryze:config", JSON.stringify({ hiddenPapers }));
-      return send(res, 200, { ok: true, hiddenPapers });
-    }
-
-    res.setHeader("Allow", "GET, PUT");
-    return send(res, 405, { error: "method" });
-  }catch(e){
-    console.error("[config]", e && e.message);
-    return send(res, 500, { error: "server" });
   }
+
+  if(req.method === "PUT"){
+    if(!sameOrigin(req)) return send(res, 403, { error: "cross-origin" });
+    if(limited("config-put:" + clientIp(req), 20, 60 * 1000))
+      return send(res, 429, { error: "too many requests" });
+
+    const check = adminCheck(req);
+    if(!check.ok) return send(res, check.status, { error: check.error });
+    if(!dbReady()) return send(res, 501, { error: "no-database" });
+
+    const body = readJson(req);
+    const list = Array.isArray(body && body.hiddenPapers)
+      ? body.hiddenPapers.filter(x => typeof x === "string" && x.length < 80).slice(0, MAX_ITEMS)
+      : [];
+    try{
+      await redis("SET", KEY, JSON.stringify(list));
+      return send(res, 200, { hiddenPapers: list });
+    }catch(e){
+      return send(res, 500, { error: "save failed" });
+    }
+  }
+
+  return send(res, 405, { error: "method not allowed" });
 }
