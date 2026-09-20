@@ -1,110 +1,133 @@
 /* ══════════════════════════════════════════════════════════════
-   /api/photos — the booth's photo database
+   api/photos.mjs — saved-strip database (admin gallery)
    ──────────────────────────────────────────────────────────────
-   POST    (visitors)  store a small JPEG preview of a saved strip.
-                       The full-quality PNG still goes to Discord via
-                       /api/discord — this is the copy the admin panel
-                       can browse.
-   GET     (admin)     ?offset=0&limit=24  → thumbnails + metadata
-                       ?id=…               → the larger preview image
-   DELETE  (admin)     ?id=…
+   POST            → anyone who saves a strip; stores a small thumb
+                      (for the grid) and a full-size copy (for the
+                      admin's full-screen view), each with a date.
+   GET  (admin)    → ?offset&limit  → { items:[{id,at,mode,frame,thumb}], total, next }
+                      ?id=...       → { id, at, mode, frame, img }   (full-size)
+   DELETE (admin)  → ?id=...        → removes it from the database
+                      (does NOT touch the copy already posted to Discord)
 
-   Layout in Redis
-     ryze:photos     list of ids, newest first (capped at KEEP)
-     ryze:m:<id>     JSON meta + tiny thumbnail   (fast to list)
-     ryze:i:<id>     the larger preview data-URL  (fetched on click)
-   Records expire on their own after PHOTO_TTL_DAYS (default 30).
+   Storage shape (Upstash Redis):
+     ryzebooth:photos:index         sorted set, score = saved-at (ms), member = id
+     ryzebooth:photos:meta:{id}     JSON: {id, at, mode, frame, w, h, thumb}
+     ryzebooth:photos:img:{id}      the full-size data URL, fetched only on open
+
+   Needs a database connected (see _store.mjs / SECURITY_AND_RELIABILITY.md).
+   Without one: POST/GET/DELETE all answer 501 "no-database" and the app
+   keeps working — strips just don't collect in the gallery.
    ══════════════════════════════════════════════════════════════ */
-import { randomBytes } from "node:crypto";
-import { dbReady, redis, pipeline, send, sameOrigin, limited, clientIp, adminCheck, readJson } from "./_store.mjs";
+import { randomUUID } from "node:crypto";
+import { redis, pipeline, dbReady, sameOrigin, limited, clientIp, adminCheck, send, readJson } from "./_store.mjs";
 
-const TTL  = Math.max(1, Number(process.env.PHOTO_TTL_DAYS) || 30) * 86400;
-const KEEP = 500;
-const JPEG_HEAD = "data:image/jpeg;base64,/9j/";          // real JPEGs start with /9j/ in base64
-const B64_URL   = /^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/;
-const MAX_THUMB = 60_000;                                   // characters, ≈ 45 KB
-const MAX_IMG   = 900_000;                                  // characters, ≈ 675 KB
-const ID_RE     = /^[a-z0-9]{6,32}$/;
+const IDX = "ryzebooth:photos:index";
+const meta = id => "ryzebooth:photos:meta:" + id;
+const img  = id => "ryzebooth:photos:img:" + id;
+const MAX_KEPT = 300;                 // oldest strips roll off past this so the database can't grow forever
+const isJpegUrl = u => typeof u === "string" && u.startsWith("data:image/jpeg;base64,") && u.length < 900000;
 
 export default async function handler(req, res){
-  try{
-    if(!dbReady()) return send(res, 501, { error: "no-database" });
-    if(req.method === "POST")   return await save(req, res);
-    if(req.method === "GET")    return await read(req, res);
-    if(req.method === "DELETE") return await remove(req, res);
-    res.setHeader("Allow", "GET, POST, DELETE");
-    return send(res, 405, { error: "method" });
-  }catch(e){
-    console.error("[photos]", e && e.message);
-    return send(res, 500, { error: "server" });
-  }
+  if(req.method === "POST") return handlePost(req, res);
+  if(req.method === "GET")  return handleGet(req, res);
+  if(req.method === "DELETE") return handleDelete(req, res);
+  return send(res, 405, { error: "method not allowed" });
 }
 
-async function save(req, res){
-  if(!sameOrigin(req)) return send(res, 403, { error: "origin" });
-  if(limited("photo:" + clientIp(req), 10, 60_000)) return send(res, 429, { error: "slow-down" });
+async function handlePost(req, res){
+  if(!sameOrigin(req)) return send(res, 403, { error: "cross-origin" });
+  if(limited("photos-post:" + clientIp(req), 20, 60 * 1000))
+    return send(res, 429, { error: "too many requests" });
+  if(!dbReady()) return send(res, 501, { error: "no-database" });
 
-  const b = readJson(req);
-  if(!b) return send(res, 400, { error: "json" });
+  const body = readJson(req);
+  if(!body || !isJpegUrl(body.thumb) || !isJpegUrl(body.img))
+    return send(res, 400, { error: "bad photo" });
 
-  const ok = (s, max) => typeof s === "string" && s.length <= max && s.startsWith(JPEG_HEAD) && B64_URL.test(s);
-  if(!ok(b.thumb, MAX_THUMB) || !ok(b.img, MAX_IMG)) return send(res, 400, { error: "image" });
-
-  const int = (n, lo, hi) => { n = Math.round(Number(n)); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : 0; };
-  const id = Date.now().toString(36) + randomBytes(4).toString("hex");
-  const meta = {
-    id, at: Date.now(),
-    mode:  b.mode === "duo" ? "duo" : "solo",
-    frame: String(b.frame || "").replace(/[\u0000-\u001f<>]/g, "").slice(0, 40),
-    w: int(b.w, 0, 8000), h: int(b.h, 0, 8000),
-    thumb: b.thumb
+  const id = Date.now().toString(36) + "-" + randomUUID().slice(0, 8);
+  const at = Date.now();
+  const record = {
+    id, at,
+    mode:  body.mode === "duo" ? "duo" : "solo",
+    frame: typeof body.frame === "string" ? body.frame.slice(0, 40) : "",
+    w: Number(body.w) || 0, h: Number(body.h) || 0,
+    thumb: body.thumb
   };
 
-  await pipeline([
-    ["SET", "ryze:m:" + id, JSON.stringify(meta), "EX", TTL],
-    ["SET", "ryze:i:" + id, b.img, "EX", TTL],
-    ["LPUSH", "ryze:photos", id],
-    ["LTRIM", "ryze:photos", 0, KEEP - 1]
-  ]);
-  return send(res, 200, { ok: true, id });
+  try{
+    await pipeline([
+      ["SET", meta(id), JSON.stringify(record)],
+      ["SET", img(id), body.img],
+      ["ZADD", IDX, at, id]
+    ]);
+    trimOld().catch(() => {});     // best-effort housekeeping, never blocks the save
+    return send(res, 200, { ok: true, id });
+  }catch(e){
+    return send(res, 500, { error: "save failed" });
+  }
 }
 
-async function read(req, res){
-  const a = adminCheck(req);
-  if(!a.ok) return send(res, a.status, { error: a.error });
-
-  const q = req.query || {};
-  if(q.id){
-    const id = String(q.id);
-    if(!ID_RE.test(id)) return send(res, 400, { error: "id" });
-    const img = await redis("GET", "ryze:i:" + id);
-    return img ? send(res, 200, { img }) : send(res, 404, { error: "gone" });
-  }
-
-  const limit  = Math.min(48, Math.max(1, parseInt(q.limit, 10) || 24));
-  const offset = Math.max(0, parseInt(q.offset, 10) || 0);
-  const [ids, total] = await pipeline([
-    ["LRANGE", "ryze:photos", offset, offset + limit - 1],
-    ["LLEN", "ryze:photos"]
-  ]);
-  let items = [];
-  if(ids && ids.length){
-    const rows = await redis("MGET", ...ids.map(i => "ryze:m:" + i));
-    items = rows.map(r => { try{ return r ? JSON.parse(r) : null; }catch(e){ return null; } }).filter(Boolean);
-  }
-  const next = offset + (ids ? ids.length : 0);
-  return send(res, 200, { items, total: total || 0, next: next < (total || 0) ? next : null });
+async function trimOld(){
+  const count = await redis("ZCARD", IDX);
+  if(!count || count <= MAX_KEPT) return;
+  const extra = count - MAX_KEPT;
+  const old = await redis("ZRANGE", IDX, 0, extra - 1);
+  if(!old || !old.length) return;
+  const cmds = [["ZREM", IDX, ...old]];
+  for(const id of old) cmds.push(["DEL", meta(id)], ["DEL", img(id)]);
+  await pipeline(cmds);
 }
 
-async function remove(req, res){
-  const a = adminCheck(req);
-  if(!a.ok) return send(res, a.status, { error: a.error });
-  const id = String((req.query && req.query.id) || "");
-  if(!ID_RE.test(id)) return send(res, 400, { error: "id" });
-  await pipeline([
-    ["DEL", "ryze:m:" + id],
-    ["DEL", "ryze:i:" + id],
-    ["LREM", "ryze:photos", 0, id]
-  ]);
-  return send(res, 200, { ok: true });
+async function handleGet(req, res){
+  if(limited("photos-get:" + clientIp(req), 60, 60 * 1000))
+    return send(res, 429, { error: "too many requests" });
+  const check = adminCheck(req);
+  if(!check.ok) return send(res, check.status, { error: check.error });
+  if(!dbReady()) return send(res, 501, { error: "no-database" });
+
+  const url = new URL(req.url, "http://x");
+  const id = url.searchParams.get("id");
+
+  if(id){
+    try{
+      const [m, i] = await pipeline([["GET", meta(id)], ["GET", img(id)]]);
+      if(!m) return send(res, 404, { error: "not found" });
+      const rec = JSON.parse(m);
+      return send(res, 200, { ...rec, img: i || rec.thumb });
+    }catch(e){
+      return send(res, 500, { error: "load failed" });
+    }
+  }
+
+  const offset = Math.max(0, Number(url.searchParams.get("offset")) || 0);
+  const limit  = Math.min(60, Math.max(1, Number(url.searchParams.get("limit")) || 24));
+  try{
+    const total = (await redis("ZCARD", IDX)) || 0;
+    if(!total) return send(res, 200, { items: [], total: 0, next: null });
+    const ids = await redis("ZREVRANGE", IDX, offset, offset + limit - 1);
+    const rows = ids && ids.length ? await pipeline(ids.map(id => ["GET", meta(id)])) : [];
+    const items = rows.filter(Boolean).map(r => { try{ return JSON.parse(r); }catch(e){ return null; } }).filter(Boolean);
+    const next = offset + limit < total ? offset + limit : null;
+    return send(res, 200, { items, total, next });
+  }catch(e){
+    return send(res, 500, { error: "load failed" });
+  }
+}
+
+async function handleDelete(req, res){
+  if(!sameOrigin(req)) return send(res, 403, { error: "cross-origin" });
+  const check = adminCheck(req);
+  if(!check.ok) return send(res, check.status, { error: check.error });
+  if(!dbReady()) return send(res, 501, { error: "no-database" });
+
+  const url = new URL(req.url, "http://x");
+  const id = url.searchParams.get("id");
+  if(!id) return send(res, 400, { error: "missing id" });
+
+  try{
+    await pipeline([["ZREM", IDX, id], ["DEL", meta(id)], ["DEL", img(id)]]);
+    return send(res, 200, { ok: true });
+  }catch(e){
+    return send(res, 500, { error: "delete failed" });
+  }
 }
