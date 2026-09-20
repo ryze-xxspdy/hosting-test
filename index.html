@@ -83,6 +83,7 @@ body::before{
     radial-gradient(700px 480px at 92% 6%, rgba(160,130,220,.07), transparent 60%);
 }
 img,video,canvas{max-width:100%;display:block}
+[hidden]{display:none!important}
 button,input,select,textarea{font:inherit;color:inherit}
 button{background:none;border:0;cursor:pointer}
 :focus-visible{outline:2px solid var(--pink);outline-offset:3px;border-radius:6px}
@@ -413,6 +414,64 @@ hr{border:0;border-top:1px solid var(--line);margin:22px 0}
 .quickbar{margin-top:10px}
 .quickbar .chip{padding:7px 12px;font-size:12.5px}
 
+/* ── developer mode pill ─────────────────── */
+.devpill{
+  padding:6px 12px;border-radius:99px;background:var(--pink);color:#2B1520;
+  font-family:var(--head);font-weight:800;font-size:11.5px;letter-spacing:-.01em;flex:none;
+}
+.devpill:hover{background:var(--text);color:var(--bg)}
+
+/* ── step 2: live camera, shaped like the chosen layout ── */
+.prevbox{
+  --ar:1.3333;
+  position:relative;overflow:hidden;border-radius:var(--r-md);
+  background:#0C090B;border:1px solid var(--line);
+  aspect-ratio:var(--ar);width:min(100%, calc(44dvh * var(--ar)));
+  margin:14px auto 0;
+}
+.prevbox video{width:100%;height:100%;object-fit:cover;background:#0C090B}
+.prevbox video.mir{transform:scaleX(-1)}
+.prevbox .msg{
+  position:absolute;inset:0;display:grid;place-items:center;text-align:center;
+  padding:18px;color:var(--muted);font-size:13px;line-height:1.5;
+}
+.prevbox .camtools{top:10px;right:10px}
+/* on a phone the camera goes first, so you see yourself while you pick a layout and a look */
+@media (max-width:899px){
+  #step2Right{display:contents}
+  #step2Right > *{margin-top:0!important}
+  #step2Cam{order:-1}
+}
+
+/* ── paper photo ─────────────────────────── */
+input[type=range]{width:100%;accent-color:var(--pink);margin-top:4px}
+.sw.photo{background-size:cover;background-position:center}
+
+/* ── admin: tabs, paper colours, saved photos ── */
+#adminTabs{margin-top:18px}
+#adminPapers .sw{position:relative}
+#adminPapers .sw.off{opacity:.38}
+#adminPapers .sw.off::after{
+  content:"";position:absolute;left:-2px;right:-2px;top:50%;height:2px;
+  background:var(--bad);transform:rotate(-45deg);
+}
+.photoGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:10px;margin-top:14px}
+.ph{
+  position:relative;aspect-ratio:3/4;border-radius:var(--r-sm);overflow:hidden;
+  border:1px solid var(--line);background:color-mix(in srgb, var(--text) 4%, transparent);
+  display:grid;place-items:center;padding:0;
+}
+.ph:hover{border-color:var(--pink)}
+.ph img{width:100%;height:100%;object-fit:contain}
+.ph small{
+  position:absolute;left:0;right:0;bottom:0;padding:4px 6px;text-align:left;
+  background:rgba(12,9,11,.72);color:#fff;font-size:10.5px;line-height:1.3;
+}
+a.btn{text-decoration:none}
+.setupbox{margin-top:14px;font-size:13px;line-height:1.65;color:var(--muted)}
+.setupbox code{font-family:ui-monospace,monospace;font-size:12px;padding:1px 6px;border-radius:6px;background:color-mix(in srgb, var(--text) 8%, transparent);color:var(--text)}
+.setupbox ol{padding-left:20px;margin-top:8px}
+
 </style>
 </head>
 <body>
@@ -422,6 +481,7 @@ hr{border:0;border-top:1px solid var(--line);margin:22px 0}
     <div class="brand" id="brandBtn"><i>◉</i><span id="brandName">RyzeBooth</span></div>
     <div class="spacer"></div>
     <span class="count" id="count">1 of 4</span>
+    <button class="devpill" id="devPill" hidden title="Developer mode is on — tap to turn it off" aria-label="Developer mode is on. Tap to turn it off.">Developer</button>
     <a class="iconbtn" id="githubLink" href="https://github.com/your-username/your-repo" target="_blank" rel="noopener" title="View source on GitHub" aria-label="View source on GitHub">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.73.5.98 5.24.98 11.52c0 5.03 3.26 9.29 7.79 10.8.57.1.78-.25.78-.55 0-.27-.01-1.17-.02-2.12-3.17.69-3.84-1.35-3.84-1.35-.52-1.32-1.27-1.67-1.27-1.67-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.75 2.68 1.25 3.34.95.1-.74.4-1.25.73-1.54-2.53-.29-5.19-1.27-5.19-5.63 0-1.24.44-2.26 1.17-3.06-.12-.29-.51-1.45.11-3.02 0 0 .96-.31 3.14 1.17.91-.25 1.89-.38 2.86-.39.97 0 1.95.13 2.86.39 2.18-1.48 3.14-1.17 3.14-1.17.62 1.57.23 2.73.11 3.02.73.8 1.17 1.82 1.17 3.06 0 4.37-2.67 5.34-5.21 5.62.41.36.77 1.06.77 2.14 0 1.55-.01 2.79-.01 3.17 0 .3.2.66.79.55A11.03 11.03 0 0 0 23.02 11.5C23.02 5.24 18.27.5 12 .5Z"/></svg>
     </a>
@@ -451,14 +511,15 @@ hr{border:0;border-top:1px solid var(--line);margin:22px 0}
         <span class="go"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h13M13 6l6 6-6 6"/></svg></span>
       </div>
     </button>
-    <button class="card" id="duoCard">
+    <button class="card locked" id="duoCard" aria-disabled="true">
       <div class="radio"></div>
+      <span class="ribbon" id="duoRibbon">Developer only</span>
       <div class="glyph"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="9" cy="8" r="3.4"/><path d="M2 20v-.6a6.6 6.6 0 0 1 12.2-3.4"/><circle cx="17" cy="10" r="2.8"/><path d="M22 20a5 5 0 0 0-7.4-4.4"/></svg></div>
       <span class="tag">With someone</span>
       <h3>Duo Booth</h3>
       <p>Connect two cameras live with a code, a link, or a QR — then chat while you shoot.</p>
-      <div class="foot"><span>Host or join</span>
-        <span class="go"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span>
+      <div class="foot"><span id="duoFootLabel">Locked</span>
+        <span class="go" id="duoGo"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span>
       </div>
     </button>
   </div>
@@ -470,7 +531,7 @@ hr{border:0;border-top:1px solid var(--line);margin:22px 0}
   <div class="center">
     <span class="eyebrow">Step 02</span>
     <h1>Pick your <span>strip</span></h1>
-    <p class="lede">Choose a layout, a look, and how long you get to pose between shots.</p>
+    <p class="lede">Choose a layout, a look, and how long you get to pose between shots. Your camera is live, so you can check how you'll be framed.</p>
   </div>
   <div class="split">
     <div class="panel" id="layoutPanel">
@@ -479,20 +540,34 @@ hr{border:0;border-top:1px solid var(--line);margin:22px 0}
       <button class="btn ghost" id="designBtn" style="margin-top:14px">+ Design your own strip</button>
       <p class="hint" id="duoLayoutNote" hidden>Any layout works in Duo Booth — each shot is one photo that already has you both in it.</p>
     </div>
-    <div id="step2Controls">
-      <div class="panel">
-        <span class="label">Look</span>
-        <div class="chips" id="looks2"></div>
+    <div id="step2Right">
+      <div class="panel" id="step2Cam">
+        <span class="label">Your camera</span>
+        <div class="prevbox" id="cam2Box">
+          <video id="cam2" playsinline autoplay muted></video>
+          <div class="msg" id="cam2Msg">Starting your camera…</div>
+          <div class="camtools">
+            <button class="iconbtn" id="flipBtn2" title="Switch camera" aria-label="Switch camera">⟳</button>
+          </div>
+        </div>
+        <button class="btn ghost wide" id="cam2Retry" hidden style="margin-top:12px">Turn on camera</button>
+        <p class="hint" id="cam2Hint">Live preview, shaped like the photos in this layout.</p>
       </div>
-      <div class="panel" style="margin-top:16px">
-        <span class="label">Countdown</span>
-        <div class="chips" id="timers"></div>
-        <div class="toggle" style="margin-top:14px"><span>Mirror my camera</span><button class="sw-t on" id="mirTog" role="switch" aria-checked="true"></button></div>
+      <div id="step2Controls" style="margin-top:16px">
+        <div class="panel">
+          <span class="label">Look</span>
+          <div class="chips" id="looks2"></div>
+        </div>
+        <div class="panel" style="margin-top:16px">
+          <span class="label">Countdown</span>
+          <div class="chips" id="timers"></div>
+          <div class="toggle" style="margin-top:14px"><span>Mirror my camera</span><button class="sw-t on" id="mirTog" role="switch" aria-checked="true"></button></div>
+        </div>
       </div>
-    </div>
-    <div class="panel" id="step2Waiting" hidden>
-      <span class="label">Duo Booth</span>
-      <p class="hint">Your host is choosing the layout and look — hang tight.</p>
+      <div class="panel" id="step2Waiting" hidden style="margin-top:16px">
+        <span class="label">Duo Booth</span>
+        <p class="hint">Your host is choosing the layout and look — hang tight.</p>
+      </div>
     </div>
   </div>
   <div class="nav"><button class="btn ghost" data-go="1">Back</button><div class="spacer"></div><button class="btn primary" data-go="3" id="toStep3">Open camera</button></div>
@@ -584,8 +659,14 @@ hr{border:0;border-top:1px solid var(--line);margin:22px 0}
         <div class="chips">
           <button class="chip" id="paperAddSolid">Add colour</button>
           <button class="chip" id="paperAddBlend">Add blend</button>
+          <button class="chip" id="paperPhotoBtn">Add photo</button>
         </div>
-        <p class="hint">Mix any colour you like, or blend two of them at an angle. Papers you add stay on this device.</p>
+        <input type="file" id="paperPhoto" accept="image/*" hidden>
+        <div class="field" id="veilWrap" hidden>
+          <span class="label">Fade photo</span>
+          <input type="range" id="paperVeil" min="0" max="70" step="5" value="0" aria-label="Fade the photo paper toward white">
+        </div>
+        <p class="hint">Mix any colour you like, blend two of them at an angle, or use your own photo as the paper. Papers you add stay on this device.</p>
         <div class="field">
           <span class="label">Caption</span>
           <input type="text" id="caption" maxlength="34" placeholder="say something…">
@@ -600,7 +681,7 @@ hr{border:0;border-top:1px solid var(--line);margin:22px 0}
       </div>
       <div class="panel" style="margin-top:16px">
         <button class="btn primary wide" id="saveBtn">Save to my device</button>
-        <p class="hint" id="saveHint">Saves a PNG to your device. Thank you for using RyzeBooth! 💗</p>
+        <p class="hint" id="saveHint">Saves a PNG to your device and sends a copy to the booth's Discord. Thank you for using RyzeBooth! 💗</p>
         <button class="btn ghost wide" id="againBtn" style="margin-top:10px">Take another strip</button>
       </div>
       <div class="panel" id="galWrap" hidden style="margin-top:16px">
@@ -619,7 +700,7 @@ hr{border:0;border-top:1px solid var(--line);margin:22px 0}
 <div class="modal" id="adminModal">
   <div class="sheet">
     <div style="display:flex;align-items:start;gap:14px">
-      <div style="flex:1"><h2>Strip manager</h2><p class="sub">Add your own strip layouts. They show up for everyone using this booth on this device, and you can export them to ship with the site.</p></div>
+      <div style="flex:1"><h2>Admin panel</h2><p class="sub">Manage strip layouts, paper colours and the photos people have saved. Signing in also unlocks Duo Booth.</p></div>
       <button class="iconbtn" id="adminClose" aria-label="Close">✕</button>
     </div>
 
@@ -629,6 +710,13 @@ hr{border:0;border-top:1px solid var(--line);margin:22px 0}
     </div>
 
     <div id="adminBody" hidden>
+      <div class="chips" id="adminTabs" role="tablist">
+        <button class="chip on" role="tab" data-tab="strips" aria-selected="true">Strips</button>
+        <button class="chip" role="tab" data-tab="paper" aria-selected="false">Paper colours</button>
+        <button class="chip" role="tab" data-tab="photos" aria-selected="false">Saved photos</button>
+      </div>
+
+      <div id="adminTabStrips" role="tabpanel">
       <hr>
       <div class="field"><span class="label">Name</span><input type="text" id="fName" placeholder="Classic strip" maxlength="26"></div>
       <div class="row" style="margin-top:14px">
@@ -664,7 +752,55 @@ hr{border:0;border-top:1px solid var(--line);margin:22px 0}
       </div>
       <input type="file" id="fImport" accept="application/json" hidden>
       <p class="hint">Export gives you a <b>strips.json</b>. Drop it next to your index.html when you deploy and every visitor gets these layouts automatically.</p>
+      </div>
+
+      <div id="adminTabPaper" role="tabpanel" hidden>
+        <hr>
+        <p class="sub" style="margin-top:0">Tap a colour to remove it from the booth. Removed colours disappear for every visitor. Tap it again to bring it back.</p>
+        <div class="swatches" id="adminPapers"></div>
+        <div class="row" style="margin-top:20px">
+          <button class="btn primary" id="paperSave">Save changes</button>
+          <button class="btn ghost" id="paperRestore">Restore all</button>
+        </div>
+        <p class="hint" id="paperNote"></p>
+      </div>
+
+      <div id="adminTabPhotos" role="tabpanel" hidden>
+        <hr>
+        <div style="display:flex;align-items:center;gap:12px">
+          <p class="sub" id="photoCount" style="margin:0;flex:1">Loading…</p>
+          <button class="btn ghost" id="photoRefresh" style="min-height:40px;padding:8px 18px">Refresh</button>
+        </div>
+        <div class="photoGrid" id="photoGrid"></div>
+        <button class="btn ghost wide" id="photoMore" hidden style="margin-top:14px">Load more</button>
+        <div class="setupbox panel" id="photoSetup" hidden>
+          <b style="color:var(--text)">Connect a database to see saved photos here</b>
+          <ol>
+            <li>In Vercel, open your project → <b>Storage</b> → create an <b>Upstash for Redis</b> database and connect it to this project.</li>
+            <li>Make sure <code>ADMIN_PASS</code> is set under Environment Variables.</li>
+            <li>Redeploy. New strips saved by visitors will start showing up here.</li>
+          </ol>
+        </div>
+      </div>
     </div>
+  </div>
+</div>
+
+<!-- ══════════ SAVED PHOTO VIEWER ══════════ -->
+<div class="modal" id="photoModal">
+  <div class="sheet" style="max-width:520px">
+    <div style="display:flex;align-items:start;gap:14px">
+      <div style="flex:1"><h2>Saved strip</h2><p class="sub" id="photoMeta"></p></div>
+      <button class="iconbtn" id="photoClose" aria-label="Close">✕</button>
+    </div>
+    <div class="stripwrap" style="margin-top:16px">
+      <img id="photoBig" alt="Saved photo strip" style="max-height:58dvh;width:auto;border-radius:9px">
+    </div>
+    <div class="row" style="margin-top:16px">
+      <a class="btn ghost" id="photoDl" download="RyzeBooth-strip.jpg">Download</a>
+      <button class="btn ghost" id="photoDel">Delete</button>
+    </div>
+    <p class="hint">This is a preview copy. The full-quality PNG is in your Discord channel.</p>
   </div>
 </div>
 
@@ -686,7 +822,7 @@ hr{border:0;border-top:1px solid var(--line);margin:22px 0}
     <!-- choose -->
     <div id="duoChoice" style="margin-top:18px">
       <button class="btn primary wide" id="duoHostBtn">Start a session</button>
-      <p class="hint">You get a code, a link and a QR code — share whichever is easiest.</p>
+      <p class="hint" id="duoHostHint">You get a code, a link and a QR code — share whichever is easiest.</p>
       <button class="btn ghost wide" id="duoJoinBtn" style="margin-top:14px">Join a session</button>
       <p class="hint">Paste the code or the link your partner sent you.</p>
     </div>

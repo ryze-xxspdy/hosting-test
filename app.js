@@ -10,7 +10,16 @@
 const CONFIG = {
   name: "RyzeBooth",
   discordEndpoint: "/api/discord",  // Vercel function; leave as is
+  photosEndpoint:  "/api/photos",   // photo database (admin gallery)  — api/photos.mjs
+  configEndpoint:  "/api/config",   // booth-wide settings (removed paper colours) — api/config.mjs
   defaultCaption: "",
+
+  /* Duo Booth is developer-only: tap the logo (or the locked Duo card) 5×,
+     sign in, and it unlocks. Should someone who was sent an invite link /
+     QR code by a developer be able to JOIN without signing in? true = yes.
+     Hosting always needs developer mode either way. */
+  duoLinkJoinOpen: true,
+  maxPaperPhotos: 6,                // photo papers kept on a device
   maxShots: 8,
   duoPeerPrefix: "ryzebooth-",      // namespaces our codes on the shared PeerJS broker
 
@@ -129,6 +138,8 @@ const PAPERS = [
 
 function paperStops(p){
   const s = String(p || "#FFFFFF");
+  /* "img:<id>" — the visitor's own photo (kept on their device, see loadPapers) */
+  if(s.startsWith("img:")) return { a: "#E9E4E1", b: "#E9E4E1", ang: 0, grad: false, img: s.slice(4) };
   if(s.startsWith("grad:")){
     const [a, b, ang] = s.slice(5).split(",");
     return { a: a || "#FFFFFF", b: b || a || "#FFFFFF", ang: Number(ang) || 160, grad: true };
@@ -139,8 +150,43 @@ function paperCss(p){
   const s = paperStops(p);
   return s.grad ? `linear-gradient(${s.ang}deg, ${s.a}, ${s.b})` : s.a;
 }
+
+/* Photo papers: decoded once, and we remember how bright each one is so the
+   caption / date pick a readable ink colour. */
+const paperImgCache = {};
+function paperImage(id){
+  const held = S.paperImgs[id];
+  if(!held) return null;
+  let im = paperImgCache[id];
+  if(!im){
+    im = new Image();
+    im.onload = () => { im._lum = sampleLum(im); if(S.step === 4) drawPreview(); };
+    im.src = held.full;
+    paperImgCache[id] = im;
+  }
+  return im;
+}
+function sampleLum(im){
+  try{
+    const c = document.createElement("canvas"); c.width = c.height = 16;
+    const x = c.getContext("2d"); x.drawImage(im, 0, 0, 16, 16);
+    const d = x.getImageData(0, 0, 16, 16).data; let t = 0;
+    for(let i = 0; i < d.length; i += 4) t += .2126 * d[i] + .7152 * d[i+1] + .0722 * d[i+2];
+    return t / 256;
+  }catch(e){ return 200; }
+}
+
 function paintPaper(x, w, h){
   const s = paperStops(S.bg);
+  if(s.img){
+    x.fillStyle = s.a; x.fillRect(0, 0, w, h);
+    const im = paperImage(s.img);
+    if(im && im.complete && im.naturalWidth){
+      drawCover(x, im, 0, 0, w, h);
+      if(S.veil > 0){ x.fillStyle = `rgba(255,255,255,${S.veil})`; x.fillRect(0, 0, w, h); }
+    }
+    return;
+  }
   if(!s.grad){ x.fillStyle = s.a; x.fillRect(0, 0, w, h); return; }
   const r = s.ang * Math.PI / 180;
   const dx = Math.sin(r), dy = -Math.cos(r);
@@ -151,6 +197,11 @@ function paintPaper(x, w, h){
 }
 function paperIsDark(){
   const s = paperStops(S.bg);
+  if(s.img){
+    const im = paperImgCache[s.img];
+    const base = im && im._lum != null ? im._lum : 200;      // unknown yet → assume light
+    return (base * (1 - S.veil) + 255 * S.veil) < 140;       // the fade slider lightens it
+  }
   return (lum(s.a) + lum(s.b)) / 2 < 140;
 }
 function lum(hex){
@@ -179,6 +230,8 @@ const S = {
   mirror: true, facing: "user", sound: true,
   shots: [], stickers: [], sel: null, cat: "😀",
   busy: false, gallery: [], custom: {}, papers: [],
+  paperImgs: {}, veil: 0, hiddenPapers: [],
+  dev: false, adminPass: "",          // adminPass lives in memory only, never stored
   duo: emptyDuo(), theme: "dark",
   duoView: "choice", chat: [], unread: 0, chatCollapsed: false
 };
@@ -193,6 +246,8 @@ function emptyDuo(){
   };
 }
 
+/* every <video> that shows OUR camera — they all share the one stream */
+const LOCAL_VIDEOS = ["#cam", "#cam2", "#duoModalCam", "#duoSelfCam"];
 const $  = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 const wait = ms => new Promise(r => setTimeout(r, ms));
@@ -230,12 +285,12 @@ function goSilent(n){ stepEcho = true; try{ go(n); } finally { stepEcho = false;
 
 function go(n){
   if(n === 3 && S.step !== 3) prepShots();
-  if(n !== 3) stopCam();
+  if(n !== 2 && n !== 3) stopCam();        // steps 2 and 3 both show the live camera
   S.step = n;
   $$(".step").forEach((el, i) => el.classList.toggle("on", i + 1 === n));
   $("#fill").style.width = (n / 4 * 100) + "%";
   $("#count").textContent = n + " of 4";
-  if(n === 2) applyDuoStep2UI();
+  if(n === 2){ applyDuoStep2UI(); startStep2Cam(); }
   if(n === 3) applyDuoStep3UI();
   if(n === 4){ drawPreview(); toast("Thank you for using RyzeBooth ✨", "good"); }
   /* the host drags the guest along so nobody is left on the wrong screen */
@@ -245,7 +300,48 @@ function go(n){
 $$("[data-go]").forEach(b => b.onclick = () => go(+b.dataset.go));
 $("#toStep4").onclick = () => go(4);
 $("#soloCard").onclick = () => { teardownDuo(); releaseCam(); markCardSelected("solo"); go(2); };
-$("#duoCard").onclick = () => openDuoModal();
+/* ─── Duo Booth is developer-only ─────────────────────────────
+   Visitors who tap the Duo card are told so. Five quick taps on the
+   logo (or on the locked card) open the admin sign-in; signing in
+   switches developer mode on and unlocks Duo for this tab. This is a
+   front-of-house gate for a feature still in development, not a
+   security boundary — the passcode itself is checked on the server.   */
+const DEV_KEY = "ryze_dev_v1";
+const LOCK_SVG  = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
+const ARROW_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h13M13 6l6 6-6 6"/></svg>';
+const DUO_LOCKED_MSG = "Duo Booth is only available in developer mode.";
+
+function applyDuoGate(){
+  const card = $("#duoCard");
+  card.classList.toggle("locked", !S.dev);
+  card.setAttribute("aria-disabled", S.dev ? "false" : "true");
+  $("#duoRibbon").hidden = S.dev;
+  $("#duoFootLabel").textContent = S.dev ? "Host or join" : "Locked";
+  $("#duoGo").innerHTML = S.dev ? ARROW_SVG : LOCK_SVG;
+  $("#devPill").hidden = !S.dev;
+  /* only developers can start a room; joining is a separate choice (CONFIG.duoLinkJoinOpen) */
+  $("#duoHostBtn").hidden = !S.dev;
+  $("#duoHostHint").hidden = !S.dev;
+}
+function setDev(on){
+  S.dev = !!on;
+  try{ on ? sessionStorage.setItem(DEV_KEY, "1") : sessionStorage.removeItem(DEV_KEY); }catch(e){}
+  if(!on) S.adminPass = "";
+  applyDuoGate();
+}
+$("#devPill").onclick = () => {
+  if(S.duo.active || $("#duoModal").classList.contains("on")){ toast("Finish or leave the Duo session first"); return; }
+  setDev(false); markCardSelected("solo"); toast("Developer mode is off");
+};
+
+let duoTaps = 0, duoTapT;
+$("#duoCard").onclick = () => {
+  if(S.dev){ openDuoModal(); return; }
+  toast(DUO_LOCKED_MSG);
+  duoTaps++; clearTimeout(duoTapT);
+  duoTapT = setTimeout(() => duoTaps = 0, 900);
+  if(duoTaps >= 5){ duoTaps = 0; openAdmin(); }
+};
 
 function markCardSelected(mode){
   $("#soloCard").classList.toggle("sel", mode === "solo");
@@ -263,7 +359,28 @@ function applyDuoStep2UI(){
   if(!guest){
     buildLayouts($("#layouts"), false, layoutFilter());
   }
+  applyStep2Shape();
 }
+
+/* The step-2 preview is cropped to the same shape as one photo in the chosen
+   layout, so what you see is what the strip will get. */
+function applyStep2Shape(){
+  const box = $("#cam2Box"); if(!box) return;
+  const f = F();
+  box.style.setProperty("--ar", (f.cw / f.ch).toFixed(4));
+  $("#cam2Hint").textContent = `Live preview, shaped like the photos in “${f.label}”.`;
+}
+
+/* Turns the camera on when the person reaches step 2. If they said no (or
+   there is none) the preview says why and offers a button to try again. */
+async function startStep2Cam(){
+  const msg = $("#cam2Msg"), retry = $("#cam2Retry");
+  if(stream && stream.getVideoTracks().some(t => t.readyState === "live")){ attachLocal(); return; }
+  msg.style.display = "grid"; msg.textContent = "Starting your camera…"; retry.hidden = true;
+  try{ await ensureStream(); attachLocal(); applyCamFilter(); applyMirror(); }
+  catch(err){ /* camError() already wrote the reason into the preview */ }
+}
+$("#cam2Retry").onclick = () => startStep2Cam();
 function applyDuoStep3UI(){
   const active = S.duo.active;
   $("#stageRemote").hidden = !active;
@@ -375,15 +492,46 @@ function buildTimers(){
   });
 }
 
-const PAPER_KEY = "smora_papers_v1";
+const PAPER_KEY     = "smora_papers_v1";
+const PAPER_IMG_KEY = "smora_paperimgs_v1";
+const HIDDEN_LOCAL_KEY = "smora_hidden_papers_v1";   // fallback when no database is connected
+const isImgPaper = p => typeof p === "string" && p.startsWith("img:");
+
 function loadPapers(){
   try{ S.papers = JSON.parse(localStorage.getItem(PAPER_KEY) || "[]"); }
   catch(e){ S.papers = []; }
   if(!Array.isArray(S.papers)) S.papers = [];
+
+  /* photo papers: only accept well-formed JPEG data URLs from storage */
+  let held = {};
+  try{ held = JSON.parse(localStorage.getItem(PAPER_IMG_KEY) || "{}"); }catch(e){}
+  const okUrl = u => typeof u === "string" && u.startsWith("data:image/jpeg;base64,") && u.length < 2_500_000;
+  S.paperImgs = {};
+  if(held && typeof held === "object" && !Array.isArray(held)){
+    for(const [id, v] of Object.entries(held)){
+      if(/^i[a-z0-9]{4,24}$/.test(id) && v && okUrl(v.full) && okUrl(v.thumb)) S.paperImgs[id] = { full: v.full, thumb: v.thumb };
+    }
+  }
+  /* drop list entries whose photo is gone, and photos nothing points at */
+  S.papers = S.papers.filter(p => typeof p === "string" && (!isImgPaper(p) || S.paperImgs[p.slice(4)]));
+  const used = new Set(S.papers.filter(isImgPaper).map(p => p.slice(4)));
+  for(const id of Object.keys(S.paperImgs)) if(!used.has(id)) delete S.paperImgs[id];
 }
 function savePapers(){
-  try{ localStorage.setItem(PAPER_KEY, JSON.stringify(S.papers)); }catch(e){}
+  try{ localStorage.setItem(PAPER_KEY, JSON.stringify(S.papers)); return true; }catch(e){ return false; }
 }
+function savePaperImgs(){
+  try{ localStorage.setItem(PAPER_IMG_KEY, JSON.stringify(S.paperImgs)); return true; }catch(e){ return false; }
+}
+
+/* The admin can remove built-in colours for everyone (see the Paper colours tab). */
+const hiddenSet = () => new Set(S.hiddenPapers);
+const visiblePapers = () => PAPERS.filter(p => !hiddenSet().has(p));
+function fallbackPaper(){ return visiblePapers()[0] || S.papers[0] || PAPERS[0]; }
+function ensurePaperVisible(){
+  if(!S.bg.startsWith("img:") && hiddenSet().has(S.bg)) S.bg = fallbackPaper();
+}
+
 function addPaper(p){
   if(S.papers.includes(p) || PAPERS.includes(p)){ S.bg = p; buildSwatches(); drawPreview(); return; }
   S.papers.unshift(p);
@@ -394,28 +542,91 @@ function addPaper(p){
   toast("Paper added", "good");
 }
 
+/* ── photo as paper ───────────────────────────────────────── */
+function fileToCanvas(file, max){
+  return new Promise((res, rej) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const sc = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+      const c = document.createElement("canvas");
+      c.width  = Math.max(1, Math.round(img.naturalWidth  * sc));
+      c.height = Math.max(1, Math.round(img.naturalHeight * sc));
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url); res(c);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); rej(new Error("decode")); };
+    img.src = url;
+  });
+}
+function shrinkCanvas(src, max){
+  const sc = Math.min(1, max / Math.max(src.width, src.height));
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, Math.round(src.width * sc)); c.height = Math.max(1, Math.round(src.height * sc));
+  c.getContext("2d").drawImage(src, 0, 0, c.width, c.height);
+  return c;
+}
+async function addPaperPhoto(file){
+  if(!file) return;
+  if(!/^image\//.test(file.type)){ toast("That file isn't an image", "bad"); return; }
+  if(file.size > 20 * 1024 * 1024){ toast("Pick a photo under 20 MB", "bad"); return; }
+  let id;
+  try{
+    const c = await fileToCanvas(file, 1100);
+    id = "i" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    S.paperImgs[id] = { full: c.toDataURL("image/jpeg", .82), thumb: shrinkCanvas(c, 72).toDataURL("image/jpeg", .7) };
+  }catch(e){
+    toast("Couldn't read that photo — try a JPG or PNG", "bad"); return;
+  }
+  S.papers.unshift("img:" + id);
+  /* keep the newest few; forget the older photos so storage never fills up */
+  const mine = S.papers.filter(isImgPaper);
+  mine.slice(CONFIG.maxPaperPhotos).forEach(p => {
+    S.papers = S.papers.filter(x => x !== p);
+    delete S.paperImgs[p.slice(4)]; delete paperImgCache[p.slice(4)];
+  });
+  const kept = savePapers() & savePaperImgs();
+  S.bg = "img:" + id;
+  const im = paperImage(id);
+  try{ await im.decode(); im._lum = sampleLum(im); }catch(e){}
+  buildSwatches(); drawPreview();
+  toast(kept ? "Photo paper added" : "Photo paper added — it's too big to keep for your next visit", kept ? "good" : "");
+}
+
 function buildSwatches(){
+  ensurePaperVisible();
   const items = [
-    ...PAPERS.map(p => ({ p, mine: false })),
+    ...visiblePapers().map(p => ({ p, mine: false })),
     ...S.papers.map(p => ({ p, mine: true }))
   ];
   $("#swatches").innerHTML = items.map(({ p, mine }) => `
     <span class="swwrap">
-      <button class="sw ${S.bg === p ? "on" : ""}" data-c="${esc(p)}"
-              style="background:${paperCss(p)}" aria-label="Paper ${esc(p)}"></button>
+      <button class="sw ${isImgPaper(p) ? "photo" : ""} ${S.bg === p ? "on" : ""}" data-c="${esc(p)}"
+              style="background:${paperCss(p)}" aria-label="${isImgPaper(p) ? "Photo paper" : "Paper " + esc(p)}"></button>
       ${mine ? `<i class="swdel" data-rm="${esc(p)}" title="Remove">✕</i>` : ""}
     </span>`).join("");
+
+  /* photo swatches show a tiny thumbnail (set here, not in the attribute) */
+  $("#swatches").querySelectorAll(".sw.photo").forEach(b => {
+    const held = S.paperImgs[b.dataset.c.slice(4)];
+    if(held) b.style.backgroundImage = `url("${held.thumb}")`;
+  });
 
   $("#swatches").querySelectorAll("[data-c]").forEach(b => b.onclick = () => {
     S.bg = b.dataset.c; buildSwatches(); drawPreview();
   });
   $("#swatches").querySelectorAll("[data-rm]").forEach(b => b.onclick = e => {
     e.stopPropagation();
-    S.papers = S.papers.filter(x => x !== b.dataset.rm);
+    const gone = b.dataset.rm;
+    S.papers = S.papers.filter(x => x !== gone);
     savePapers();
-    if(S.bg === b.dataset.rm) S.bg = "#FFFFFF";
+    if(isImgPaper(gone)){ delete S.paperImgs[gone.slice(4)]; delete paperImgCache[gone.slice(4)]; savePaperImgs(); }
+    if(S.bg === gone) S.bg = fallbackPaper();
     buildSwatches(); drawPreview();
   });
+
+  $("#veilWrap").hidden = !isImgPaper(S.bg);
+  $("#paperVeil").value = Math.round(S.veil * 100);
 }
 
 function wirePaperTools(){
@@ -429,6 +640,14 @@ function wirePaperTools(){
   };
   [a, b, ang].forEach(el => el.addEventListener("input", live));
   live();
+
+  $("#paperPhotoBtn").onclick = () => $("#paperPhoto").click();
+  $("#paperPhoto").addEventListener("change", e => {
+    const file = e.target.files[0];
+    e.target.value = "";                      // so picking the same photo twice still fires
+    addPaperPhoto(file);
+  });
+  $("#paperVeil").addEventListener("input", e => { S.veil = (+e.target.value || 0) / 100; drawPreview(); });
 }
 
 function buildEmoji(){
@@ -463,6 +682,12 @@ async function ensureStream(force = false){
         video: { facingMode: S.facing, width: { ideal: 1280 }, height: { ideal: 960 } },
         audio: false
       });
+      /* They may have gone Back while the permission prompt was open. Don't
+         leave the camera light on for a screen that no longer needs it. */
+      if(!camWanted()){
+        s.getTracks().forEach(t => t.stop());
+        const e = new Error("cancelled"); e.cancelled = true; throw e;
+      }
       if(previous) previous.getTracks().forEach(t => t.stop());
       stream = s;
       attachLocal();
@@ -470,14 +695,18 @@ async function ensureStream(force = false){
       if(S.duo.active) replaceOutgoingTrack();
       return s;
     }catch(err){
-      console.error("[camera]", err);
-      camError(err);
+      if(!err || !err.cancelled){ console.error("[camera]", err); camError(err); }
       throw err;
     }
   })();
 
   try{ return await camReq; }
   finally{ camReq = null; }
+}
+
+/* Does anything on screen still need the camera? */
+function camWanted(){
+  return S.step === 2 || S.step === 3 || S.duo.active || $("#duoModal").classList.contains("on");
 }
 
 function camError(err){
@@ -490,10 +719,13 @@ function camError(err){
   if(m){ m.style.display = "grid"; m.textContent = msg; }
   const d = $("#duoCamMsg");
   if(d){ d.hidden = false; d.textContent = msg; }
+  const m2 = $("#cam2Msg");
+  if(m2){ m2.style.display = "grid"; m2.textContent = msg; }
+  const r2 = $("#cam2Retry"); if(r2) r2.hidden = false;
 }
 
 function attachLocal(){
-  ["#cam", "#duoModalCam", "#duoSelfCam"].forEach(sel => {
+  LOCAL_VIDEOS.forEach(sel => {
     const v = $(sel);
     if(!v) return;
     if(v.srcObject !== stream) v.srcObject = stream;
@@ -502,6 +734,8 @@ function attachLocal(){
   if(stream){
     const m = $("#camMsg"); if(m) m.style.display = "none";
     const d = $("#duoCamMsg"); if(d) d.hidden = true;
+    const m2 = $("#cam2Msg"); if(m2) m2.style.display = "none";
+    const r2 = $("#cam2Retry"); if(r2) r2.hidden = true;
     $("#duoModalCam").style.visibility = "visible";
   }
 }
@@ -518,13 +752,14 @@ function replaceOutgoingTrack(){
 
 function applyCamFilter(){
   const css = LOOKS[S.look].css;
-  ["#cam", "#duoModalCam", "#duoSelfCam"].forEach(sel => { const v = $(sel); if(v) v.style.filter = css; });
+  LOCAL_VIDEOS.forEach(sel => { const v = $(sel); if(v) v.style.filter = css; });
 }
 
 function prepShots(){
   const n = shotsOf(F());
   if(S.shots.length !== n) S.shots = new Array(n).fill(null);
   renderShots();
+  applyStep2Shape();
   $("#shotLine").textContent = S.duo.active
     ? `${n} shot${n > 1 ? "s" : ""} — each one a single photo with you both in it.`
     : `${n} shot${n > 1 ? "s" : ""}, one after another. Tap any photo to retake it.`;
@@ -552,24 +787,27 @@ function stopCam(){
 }
 function releaseCam(){
   if(stream){ stream.getTracks().forEach(t => t.stop()); stream = null; }
-  ["#cam", "#duoModalCam", "#duoSelfCam"].forEach(sel => { const v = $(sel); if(v) v.srcObject = null; });
+  LOCAL_VIDEOS.forEach(sel => { const v = $(sel); if(v) v.srcObject = null; });
   const m = $("#camMsg"); if(m) m.style.display = "grid";
+  const m2 = $("#cam2Msg"); if(m2){ m2.style.display = "grid"; m2.textContent = "Camera is off."; }
 }
 
 function applyMirror(){
   const on = S.mirror && S.facing === "user";
-  ["#cam", "#duoModalCam", "#duoSelfCam"].forEach(sel => { const v = $(sel); if(v) v.classList.toggle("mir", on); });
+  LOCAL_VIDEOS.forEach(sel => { const v = $(sel); if(v) v.classList.toggle("mir", on); });
   $("#mirBtn").classList.toggle("on", S.mirror);
   $("#mirTog").classList.toggle("on", S.mirror);
   $("#mirTog").setAttribute("aria-checked", S.mirror);
 }
 $("#mirBtn").onclick = () => { S.mirror = !S.mirror; applyMirror(); };
 $("#mirTog").onclick = () => { S.mirror = !S.mirror; applyMirror(); };
-$("#flipBtn").onclick = async () => {
+async function flipCamera(){
   S.facing = S.facing === "user" ? "environment" : "user";
   if(stream || S.duo.active){ try{ await ensureStream(true); }catch(e){} }
   applyMirror();
-};
+}
+$("#flipBtn").onclick = flipCamera;
+$("#flipBtn2").onclick = flipCamera;
 
 /* ─── capture ─────────────────────────────────────────────── */
 function setShoot(mode){
@@ -680,10 +918,11 @@ function combineDuo(left, right){
   return c;
 }
 function drawCover(ctx, src, dx, dy, dw, dh){
-  const sr = src.width / src.height, dr = dw / dh;
+  const W = src.naturalWidth || src.width, H = src.naturalHeight || src.height;   // <img> or <canvas>
+  const sr = W / H, dr = dw / dh;
   let sw, sh, sx, sy;
-  if(sr > dr){ sh = src.height; sw = sh * dr; sx = (src.width - sw) / 2; sy = 0; }
-  else       { sw = src.width;  sh = sw / dr; sx = 0; sy = (src.height - sh) / 2; }
+  if(sr > dr){ sh = H; sw = sh * dr; sx = (W - sw) / 2; sy = 0; }
+  else       { sw = W;  sh = sw / dr; sx = 0; sy = (H - sh) / 2; }
   ctx.drawImage(src, sx, sy, sw, sh, dx, dy, dw, dh);
 }
 
@@ -938,7 +1177,10 @@ function openDuoModal(prefill){
     $("#duoModalCam").style.visibility = "hidden";
   });
 }
-function closeDuoModal(){ $("#duoModal").classList.remove("on"); }
+function closeDuoModal(){
+  $("#duoModal").classList.remove("on");
+  if(S.step === 1 && !S.duo.active) releaseCam();      // don't leave the camera light on at the home screen
+}
 
 function showDuoView(view){
   S.duoView = view;
@@ -1032,6 +1274,7 @@ function checkPath(servers, seq){
 }
 
 async function duoHost(){
+  if(!S.dev){ toast(DUO_LOCKED_MSG); return; }
   teardownDuo();
   const seq = ++duoSeq;
   showDuoView("host");
@@ -1495,10 +1738,47 @@ window.addEventListener("beforeunload", () => { if(S.duo.active) sendDuo({ type:
 
 /* ─── save (device + Discord) ─────────────────────────────── */
 async function postToDiscord(blob){
+  /* one quiet retry: phones on mobile data drop a request now and then */
+  for(let attempt = 0; attempt < 2; attempt++){
+    try{
+      const fd = new FormData();
+      fd.append("file", blob, `${CONFIG.name}-${Date.now()}.png`);
+      const res = await fetch(CONFIG.discordEndpoint, { method: "POST", body: fd });
+      if(res.ok) return true;
+      if(res.status >= 400 && res.status < 500 && res.status !== 429) return false;   // retrying a refusal won't help
+    }catch(e){}
+    await wait(1200);
+  }
+  return false;
+}
+
+/* The admin gallery keeps a small JPEG preview (the full-quality PNG is the one
+   in Discord). Shrinks until it fits what /api/photos accepts. */
+function jpegUnder(canvas, max, quality, limit){
+  let mx = max, q = quality, url = "";
+  for(let i = 0; i < 6; i++){
+    url = shrinkCanvas(canvas, mx).toDataURL("image/jpeg", q);
+    if(url.length <= limit) return url;
+    q = Math.max(.4, q - .1); mx = Math.round(mx * .85);
+  }
+  return url.length <= limit ? url : null;
+}
+/* → true saved · false failed · null no database connected (not an error) */
+async function postToGallery(canvas){
   try{
-    const fd = new FormData();
-    fd.append("file", blob, `${CONFIG.name}-${Date.now()}.png`);
-    const res = await fetch(CONFIG.discordEndpoint, { method: "POST", body: fd });
+    const thumb = jpegUnder(canvas, 360, .6, 55000);
+    const img   = jpegUnder(canvas, 1100, .8, 850000);
+    if(!thumb || !img) return false;
+    const res = await fetch(CONFIG.photosEndpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        thumb, img,
+        mode: S.duo.active ? "duo" : "solo",
+        frame: F().label, w: canvas.width, h: canvas.height
+      })
+    });
+    if(res.status === 501) return null;
     return res.ok;
   }catch(e){ return false; }
 }
@@ -1533,7 +1813,8 @@ $("#saveBtn").onclick = async () => {
     beep(880, .1); setTimeout(() => beep(1180, .13), 110);
   }
 
-  const ok = saved ? await postToDiscord(blob) : false;
+  /* Only after they really saved (cancelling the share sheet uploads nothing). */
+  const [ok] = saved ? await Promise.all([postToDiscord(blob), postToGallery(c)]) : [false];
   toast(
     saved ? (ok ? "Saved to your device and to Discord" : "Saved to your device") : "Not saved — tap Save again",
     saved ? "good" : "bad"
@@ -1575,14 +1856,19 @@ $("#brandBtn").onclick = () => {
   tapT = setTimeout(() => tapCount = 0, 900);
   if(tapCount >= 5){ tapCount = 0; openAdmin(); }
 };
+/* Visitors can still use "+ Design your own strip" (layouts live in their own browser).
+   The other tabs — paper colours and saved photos — need the passcode, and the server
+   checks it on every request; the tab bar simply stays hidden until you are signed in. */
+function showAdminBody(signedIn){
+  $("#adminLock").hidden = true; $("#adminBody").hidden = false;
+  $("#adminTabs").hidden = !signedIn;
+  adminTab("strips");
+  buildLayouts($("#adminList"), true); drawFormPreview();
+}
 function openAdmin(skipLock = false){
   $("#adminModal").classList.add("on");
-  if(skipLock){
-    $("#adminLock").hidden = true; $("#adminBody").hidden = false;
-    buildLayouts($("#adminList"), true); drawFormPreview();
-  }else{
-    $("#adminLock").hidden = false; $("#adminBody").hidden = true; $("#adminPass").value = "";
-  }
+  if(skipLock || S.adminPass){ showAdminBody(!!S.adminPass); }
+  else{ $("#adminLock").hidden = false; $("#adminBody").hidden = true; $("#adminPass").value = ""; }
 }
 $("#adminClose").onclick = () => $("#adminModal").classList.remove("on");
 $("#adminModal").addEventListener("click", e => { if(e.target.id === "adminModal") $("#adminModal").classList.remove("on"); });
@@ -1590,12 +1876,13 @@ $("#designBtn").onclick = () => openAdmin(true);
 
 $("#adminGo").onclick = async () => {
   const btn = $("#adminGo");
+  const pass = $("#adminPass").value;
   btn.disabled = true;
   try{
     const res = await fetch("/api/admin", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ pass: $("#adminPass").value })
+      body: JSON.stringify({ pass })
     });
     if(res.status === 501){ toast("Set ADMIN_PASS in your Vercel environment variables first", "bad"); return; }
     if(res.status === 429){ toast("Too many tries — wait a few minutes", "bad"); return; }
@@ -1603,10 +1890,215 @@ $("#adminGo").onclick = async () => {
   }catch(e){ toast("Couldn't check the passcode — are you online?", "bad"); return; }
   finally{ btn.disabled = false; }
   $("#adminPass").value = "";
-  $("#adminLock").hidden = true; $("#adminBody").hidden = false;
-  buildLayouts($("#adminList"), true); drawFormPreview();
+  S.adminPass = pass;                 // memory only — gone on reload
+  setDev(true);
+  toast("Developer mode is on — Duo Booth is unlocked", "good");
+  showAdminBody(true);
 };
 $("#adminPass").addEventListener("keydown", e => { if(e.key === "Enter") $("#adminGo").click(); });
+
+/* ─── admin tabs ──────────────────────────────────────────── */
+const ADMIN_TABS = { strips: "#adminTabStrips", paper: "#adminTabPaper", photos: "#adminTabPhotos" };
+function adminTab(name){
+  Object.entries(ADMIN_TABS).forEach(([k, sel]) => { $(sel).hidden = k !== name; });
+  $$("#adminTabs [data-tab]").forEach(b => {
+    const on = b.dataset.tab === name;
+    b.classList.toggle("on", on); b.setAttribute("aria-selected", on);
+  });
+  if(name === "paper") buildAdminPapers();
+  if(name === "photos") loadPhotos(true);
+}
+$$("#adminTabs [data-tab]").forEach(b => b.onclick = () => adminTab(b.dataset.tab));
+
+/* fetch with the passcode attached; a 401 means it changed or was mistyped → sign out */
+async function adminFetch(url, opts = {}){
+  try{
+    const res = await fetch(url, {
+      cache: "no-store", ...opts,
+      headers: { ...(opts.headers || {}), "x-admin-pass": encodeURIComponent(S.adminPass) }
+    });
+    if(res.status === 401){
+      S.adminPass = "";
+      $("#adminLock").hidden = false; $("#adminBody").hidden = true;
+      toast("Signed out — enter the passcode again", "bad");
+      return null;
+    }
+    if(res.status === 429){ toast("Too many tries — wait a few minutes", "bad"); return null; }
+    return res;
+  }catch(e){ toast("Couldn't reach the server — are you online?", "bad"); return null; }
+}
+const errOf = async res => { try{ return (await res.clone().json()).error || ""; }catch(e){ return ""; } };
+
+/* ─── admin: paper colours ────────────────────────────────── */
+const CFG_CACHE_KEY = "smora_cfg_v1";
+let cfgDb = null;                       // true / false once /api/config has answered
+let paperDraft = new Set();
+
+async function loadConfig(){
+  let list = null;
+  try{
+    const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 3000);
+    const res = await fetch(CONFIG.configEndpoint, { cache: "no-store", signal: ctl.signal });
+    clearTimeout(t);
+    if(res.ok){
+      const j = await res.json();
+      cfgDb = !!j.db;
+      if(j.db && Array.isArray(j.hiddenPapers)){
+        list = j.hiddenPapers;
+        try{ localStorage.setItem(CFG_CACHE_KEY, JSON.stringify(list)); }catch(e){}
+      }
+    }
+  }catch(e){}
+  const read = key => { try{ const v = JSON.parse(localStorage.getItem(key) || "null"); return Array.isArray(v) ? v : null; }catch(e){ return null; } };
+  /* server answer > last known server answer (we were offline) > this-device fallback */
+  if(list === null) list = cfgDb === false ? read(HIDDEN_LOCAL_KEY) : (read(CFG_CACHE_KEY) || read(HIDDEN_LOCAL_KEY));
+  applyHiddenPapers(list || []);
+}
+function applyHiddenPapers(list){
+  const keep = list.filter(p => PAPERS.includes(p));
+  S.hiddenPapers = keep.length < PAPERS.length ? keep : [];     // never hide everything
+  buildSwatches();
+  if(S.step === 4) drawPreview();
+}
+
+function buildAdminPapers(){
+  paperDraft = new Set(S.hiddenPapers);
+  renderAdminPapers();
+  $("#paperNote").textContent = cfgDb === false
+    ? "No database is connected yet, so changes only apply on this device. Connect one (see Saved photos) to apply them to everyone."
+    : "";
+}
+function renderAdminPapers(){
+  const box = $("#adminPapers");
+  box.innerHTML = PAPERS.map(p => {
+    const off = paperDraft.has(p);
+    return `<button class="sw ${off ? "off" : ""}" data-p="${esc(p)}" style="background:${paperCss(p)}"
+              aria-pressed="${off}" aria-label="${off ? "Removed" : "Showing"}: ${esc(p)}"
+              title="${off ? "Removed — tap to bring it back" : "Tap to remove"}"></button>`;
+  }).join("");
+  box.querySelectorAll("[data-p]").forEach(b => b.onclick = () => {
+    const p = b.dataset.p;
+    if(paperDraft.has(p)) paperDraft.delete(p);
+    else{
+      if(paperDraft.size >= PAPERS.length - 1){ toast("Keep at least one colour", "bad"); return; }
+      paperDraft.add(p);
+    }
+    renderAdminPapers();
+  });
+}
+$("#paperRestore").onclick = () => { paperDraft.clear(); renderAdminPapers(); toast("All colours back — tap Save changes"); };
+$("#paperSave").onclick = async () => {
+  const btn = $("#paperSave"), list = [...paperDraft];
+  btn.disabled = true;
+  try{
+    const res = await adminFetch(CONFIG.configEndpoint, {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ hiddenPapers: list })
+    });
+    if(!res) return;
+    if(res.ok){
+      const j = await res.json().catch(() => ({}));
+      cfgDb = true;
+      try{ localStorage.setItem(CFG_CACHE_KEY, JSON.stringify(j.hiddenPapers || list)); }catch(e){}
+      applyHiddenPapers(j.hiddenPapers || list);
+      buildAdminPapers();
+      toast("Paper colours updated for everyone", "good");
+    }else if(res.status === 501 && (await errOf(res)) === "no-database"){
+      cfgDb = false;
+      try{ localStorage.setItem(HIDDEN_LOCAL_KEY, JSON.stringify(list)); }catch(e){}
+      applyHiddenPapers(list);
+      buildAdminPapers();
+      toast("Saved on this device only — connect a database to apply it to everyone");
+    }else if(res.status === 501){
+      toast("Set ADMIN_PASS in your Vercel environment variables first", "bad");
+    }else{
+      toast("Couldn't save — try again", "bad");
+    }
+  }finally{ btn.disabled = false; }
+};
+
+/* ─── admin: saved photos ─────────────────────────────────── */
+const photoState = { items: [], next: 0, busy: false, open: null, seq: 0 };
+const isJpegUrl = u => typeof u === "string" && u.startsWith("data:image/jpeg;base64,");
+const when = at => new Date(at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+
+async function loadPhotos(reset){
+  if(photoState.busy) return;
+  photoState.busy = true;
+  if(reset){ photoState.items = []; photoState.next = 0; $("#photoGrid").textContent = ""; }
+  $("#photoSetup").hidden = true;
+  $("#photoMore").hidden = true;
+  $("#photoCount").textContent = "Loading…";
+  try{
+    const res = await adminFetch(`${CONFIG.photosEndpoint}?offset=${photoState.next}&limit=24`);
+    if(!res){ $("#photoCount").textContent = "Couldn't load photos."; return; }
+    if(res.status === 501){
+      if((await errOf(res)) === "no-database"){
+        $("#photoCount").textContent = "No database connected yet.";
+        $("#photoSetup").hidden = false;
+      }else{
+        $("#photoCount").textContent = "Set ADMIN_PASS in your Vercel environment variables first.";
+      }
+      return;
+    }
+    if(!res.ok){ $("#photoCount").textContent = "Couldn't load photos."; return; }
+    const j = await res.json();
+    photoState.items.push(...j.items.filter(it => it && isJpegUrl(it.thumb)));
+    photoState.next = j.next;
+    renderPhotos();
+    $("#photoCount").textContent = j.total
+      ? `${j.total} saved strip${j.total === 1 ? "" : "s"}, newest first`
+      : "Nothing saved yet. Strips people save will show up here.";
+    $("#photoMore").hidden = j.next === null;
+  }finally{ photoState.busy = false; }
+}
+function renderPhotos(){
+  const grid = $("#photoGrid");
+  grid.textContent = "";
+  photoState.items.forEach(it => {
+    const b = document.createElement("button");
+    b.className = "ph"; b.type = "button";
+    b.setAttribute("aria-label", "Open saved strip from " + when(it.at));
+    const img = document.createElement("img"); img.src = it.thumb; img.alt = "";
+    const cap = document.createElement("small");
+    cap.textContent = `${when(it.at)} · ${it.mode === "duo" ? "Duo" : "Solo"}`;
+    b.append(img, cap);
+    b.onclick = () => openPhoto(it);
+    grid.append(b);
+  });
+}
+$("#photoMore").onclick = () => loadPhotos(false);
+$("#photoRefresh").onclick = () => loadPhotos(true);
+
+async function openPhoto(it){
+  const mine = ++photoState.seq;
+  photoState.open = it;
+  $("#photoMeta").textContent = `${it.frame || "Strip"} · ${it.mode === "duo" ? "Duo" : "Solo"} · ${when(it.at)}`;
+  const big = $("#photoBig");
+  big.src = it.thumb;                                     // instant, blurry — replaced below
+  $("#photoDl").href = it.thumb;
+  $("#photoModal").classList.add("on");
+  const res = await adminFetch(`${CONFIG.photosEndpoint}?id=${encodeURIComponent(it.id)}`);
+  if(!res || !res.ok || mine !== photoState.seq) return;
+  const j = await res.json().catch(() => null);
+  if(j && isJpegUrl(j.img)){ big.src = j.img; $("#photoDl").href = j.img; }
+}
+const closePhoto = () => { photoState.seq++; photoState.open = null; $("#photoModal").classList.remove("on"); };
+$("#photoClose").onclick = closePhoto;
+$("#photoModal").addEventListener("click", e => { if(e.target.id === "photoModal") closePhoto(); });
+
+$("#photoDel").onclick = async () => {
+  const it = photoState.open; if(!it) return;
+  if(!confirm("Delete this saved strip from the database? The copy in Discord is not affected.")) return;
+  const res = await adminFetch(`${CONFIG.photosEndpoint}?id=${encodeURIComponent(it.id)}`, { method: "DELETE" });
+  if(!res) return;
+  if(!res.ok){ toast("Couldn't delete — try again", "bad"); return; }
+  photoState.items = photoState.items.filter(x => x.id !== it.id);
+  closePhoto(); renderPhotos();
+  const left = Number.parseInt($("#photoCount").textContent, 10);
+  if(!Number.isNaN(left)) $("#photoCount").textContent = `${Math.max(0, left - 1)} saved strips, newest first`;
+  toast("Deleted", "good");
+};
 
 let formOverlay = null;
 const formFields = ["fName","fCols","fRows","fCw","fCh","fPad","fGap","fFoot","fRad"];
@@ -1706,6 +2198,9 @@ $("#fImport").addEventListener("change", e => {
   loadTheme();
   loadCustom();
   loadPapers();
+  try{ S.dev = sessionStorage.getItem(DEV_KEY) === "1"; }catch(e){ S.dev = false; }
+  applyDuoGate();
+  loadConfig();            // removed paper colours — runs alongside the rest of boot, never blocks it
 
   try{
     const res = await fetch("strips.json", { cache: "no-store" });
@@ -1725,10 +2220,12 @@ $("#fImport").addEventListener("change", e => {
   if(params.has("duo")){
     const code = codeFromText(params.get("duo"));
     history.replaceState(null, "", location.pathname);
-    if(code){
+    if(code && (S.dev || CONFIG.duoLinkJoinOpen)){
       markCardSelected("duo");
       openDuoModal(code);
       setTimeout(() => duoJoin(code), 400);
+    }else if(code){
+      toast(DUO_LOCKED_MSG);
     }
   }
 
